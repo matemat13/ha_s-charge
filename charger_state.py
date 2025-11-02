@@ -23,7 +23,10 @@ class ChargerParam:
     def __format__(self, format_spec):
         return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
 
-class Charger:
+    def initialized(self):
+        return self.value is not None
+
+class ChargerState:
 
     class Connector:
 
@@ -71,10 +74,10 @@ class Charger:
                             self.chargingTime,
                           ]
 
-        def __str__(self):
-            ret = ""
+        def __format__(self, format_spec):
+            ret = f"{self.connectorName}:\n"
             for param in self.params:
-                ret += f"{param:<31}\n"
+                ret += f"{param:{format_spec}}\n"
             return ret
 
         def update(self, message):
@@ -82,6 +85,9 @@ class Charger:
                 connector_data = message.payload_data[self.connectorName]
                 for param in self.params:
                     param.update(message, connector_data)
+
+        def initialized(self):
+            return all(x is not None for x in self.params)
 
     class MeterInfo:
 
@@ -96,10 +102,10 @@ class Charger:
                             self.power,
                           ]
 
-        def __str__(self):
-            ret = ""
+        def __format__(self, format_spec):
+            ret = f"Meter info:\n"
             for param in self.params:
-                ret += f"{param:<31}\n"
+                ret += f"{param:{format_spec}}\n"
             return ret
 
         def update(self, message):
@@ -108,11 +114,14 @@ class Charger:
                 for param in self.params:
                     param.update(message, meterInfo_data)
 
+        def initialized(self):
+            return all(x is not None for x in self.params)
+
     def __init__(self, chargeBoxSN):
         self.chargeBoxSN = chargeBoxSN
 
-        self.connectorMain = Charger.Connector("connectorMain")
-        self.connectorVice = Charger.Connector("connectorVice")
+        self.connectorMain = ChargerState.Connector("connectorMain")
+        self.connectorVice = ChargerState.Connector("connectorVice")
 
         # loaded from the DeviceData message
         self.sVersion = ChargerParam("software version", parse_message_type=DeviceData, parse_json_key="sVersion", ha_topic="software_vesion")
@@ -133,7 +142,7 @@ class Charger:
         self.NWireClosed = ChargerParam("NWire closed", parse_message_type=NWireToDics, parse_json_key="NWireClosed", ha_topic="nwire_closed")
 
         # loaded from the SynchroData message
-        self.meterInfo = Charger.MeterInfo()
+        self.meterInfo = ChargerState.MeterInfo()
 
         self.params = [
                     self.sVersion,
@@ -156,27 +165,13 @@ class Charger:
                 ]
 
     def __str__(self):
-        return f"Charger SN{self.chargeBoxSN}\n" \
-               f"{self.sVersion:<31}\n" \
-               f"{self.hVersion:<31}\n" \
-               f"{self.chargeTimes:<31}\n" \
-               f"{self.cumulativeTime:<31}\n" \
-               f"{self.totalPower:<31}\n" \
-               f"{self.rssi:<31}\n" \
-               f"{self.evseType:<31}\n" \
-               f"{self.evsePhase:<31}\n" \
-               f"{self.connectorNumber:<31}\n" \
-               f"{self.loadbalance:<31}\n" \
-               f"{self.isHasLock:<31}\n" \
-               f"{self.isHasMeter:<31}\n" \
-               f"{self.NWireExist:<31}\n" \
-               f"{self.NWireClosed:<31}\n\n" \
-               f"Main connector:\n" \
-               f"{self.connectorMain}\n" \
-               f"Vice connector:\n" \
-               f"{self.connectorVice}\n" \
-               f"Meter info:\n" \
-               f"{self.meterInfo}\n"
+        initialized_txt =  "not initialized"
+        if self.initialized():
+            initialized_txt = "initialized"
+        ret = f"Charger SN{self.chargeBoxSN} {initialized_txt}\n"
+        for param in self.params:
+            ret += f"{param:<31}\n"
+        return ret
 
     def update(self, message):
         # ignore data for other chargers
@@ -185,3 +180,6 @@ class Charger:
 
         for param in self.params:
             param.update(message)
+
+    def initialized(self):
+        return all(x is not None for x in self.params)

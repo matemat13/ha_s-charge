@@ -10,18 +10,18 @@ import json
 
 from messages import *
 from messages_rx import *
-from charger import Charger
+from charger_state import ChargerState
 
 class SChargeConn:
 
     def __init__(self, charge_box_serial, rcv_ip):
-        self.connected = False
+        self.websocket = None
 
         self.charge_box_serial = charge_box_serial
         self.user_id = 1
         self.connection_key = charge_box_serial
 
-        self.charger = Charger(self.charge_box_serial)
+        self.charger_state = ChargerState(self.charge_box_serial)
 
         self.rcv_ip = rcv_ip
 
@@ -40,6 +40,25 @@ class SChargeConn:
 
         self.loop_tasks = set()
 
+    async def start_charging(self, current, connectorId):
+        if self.websocket is None:
+            return False, "not connected"
+
+        if not self.charger_state.initialized():
+            return False, "charger state not initialized"
+        
+        msg = Authorize(
+                    current_time_unix = time.time(),
+                    userId = self.user_id,
+                    chargeBoxSN = self.charge_box_serial,
+                    purpose = "Start",
+                    current = current,
+                    connectorId = connectorId
+                )
+        message = msg.encode()
+        await self.send_message(self.websocket, message)
+        return False, "not implemented"
+
     async def send_message(self, websocket, message):
         print(f">> {message}")
         await websocket.send(message)
@@ -54,8 +73,8 @@ class SChargeConn:
 
     async def process_websocket(self, websocket):
         """Handles messages from the connected charger."""
-        if not self.connected:
-            self.connected = True
+        if self.websocket is None:
+            self.websocket = websocket
             self.connected_ws_fut.set_result(websocket)
             remote_ip, remote_port = websocket.remote_address
             print(f"Connection established with {remote_ip}:{remote_port}!")
@@ -71,8 +90,8 @@ class SChargeConn:
             msg_parsed = parse_json(msg_json)
             if msg_parsed is not None:
                 print(msg_parsed.payload_data)
-                self.charger.update(msg_parsed)
-                print(f"{self.charger}")
+                self.charger_state.update(msg_parsed)
+                print(f"{self.charger_state}")
 
     async def server_loop(self):
         """Starts the WebSocket server."""
@@ -96,7 +115,7 @@ class SChargeConn:
         print(f"Sending UDP broadcast handshake to {self.broadcast_ip}:{self.broadcast_port}.")
 
         try:
-            while not self.connected:
+            while self.websocket is None:
 
                 msg = UDPHandShake(
                             timeout_time_unix = time.time() + self.timeout_s,
