@@ -78,13 +78,17 @@ class SChargeConn:
         if not self.charger_state.initialized():
             return False, "charger state not initialized"
         
+        num_connectors = len(self.charger_state.connectors)
+        if connectorId > num_connectors or connectorId < 1:
+            return False, f"invalid connector ID {connectorId} (expected within range of [1, {num_connectors}]"
+
         msg_id = int(1000 * time.time())
         msg = Authorize(
                     uniqueId = msg_id,
                     userId = self.user_id,
                     chargeBoxSN = self.charge_box_serial,
                     purpose = "Stop",
-                    current = self.charger_state.miniCurrent.value,
+                    current = self.charger_state.connectors[connectorId-1].miniCurrent.value,
                     connectorId = connectorId
                 )
         message = msg.encode()
@@ -215,10 +219,10 @@ class SChargeConn:
         # res = await self.start_charging(6, 2)
         # print(res)
 
-        # await asyncio.sleep(5.0)
-        # print("Stopping charge from the terminal!")
-        # res = await self.stop_charging(2)
-        # print(res)
+        await asyncio.sleep(10.0)
+        print("Stopping charge from the terminal!")
+        res = await self.stop_charging(2)
+        print(res)
         return
 
     async def main(self):

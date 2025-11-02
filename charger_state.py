@@ -122,6 +122,7 @@ class ChargerState:
 
         self.connectorMain = ChargerState.Connector("connectorMain")
         self.connectorVice = ChargerState.Connector("connectorVice")
+        self.connectors = [self.connectorMain, self.connectorVice]
 
         # loaded from the DeviceData message
         self.sVersion = ChargerParam("software version", parse_message_type=DeviceData, parse_json_key="sVersion", ha_topic="software_vesion")
