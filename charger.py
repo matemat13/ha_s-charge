@@ -1,149 +1,176 @@
 #!/usr/bin/env python3
 from messages_rx import *
-from typing import Type
+from typing import Type, Callable
+
+class ChargerParam:
+    def __init__(self, human_name : str, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", transform : Callable = lambda x : x):
+        self.human_name = human_name
+        self.human_name_colon = self.human_name + ":"
+        self.parse_message_type = parse_message_type
+        self.parse_json_key = parse_json_key
+        self.ha_topic = ha_topic
+        self.unit = unit
+        self.transform = transform
+        self.value = None
+
+    def update(self, message, payload_data = None):
+        if type(message) == self.parse_message_type:
+            if payload_data is None:
+                self.value = self.transform(message.payload_data[self.parse_json_key])
+            else:
+                self.value = self.transform(payload_data[self.parse_json_key])
+
+    def __format__(self, format_spec):
+        return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
 
 class Charger:
-    class Param:
-        def __init__(self, human_name : str, parse_message_type : Type[PayloadMsg], parse_json_key : str, unit : str, ha_topic : str):
-            self.human_name = human_name
-            self.human_name_colon = self.human_name + ":"
-            self.parse_message_type = parse_message_type
-            self.parse_json_key = parse_json_key
-            self.unit = unit
-            self.ha_topic = ha_topic
-            self.value = None
-
-        def update(self, parse_message):
-            self.value = parse_message.payload_data[self.parse_json_key]
-
-        def __format__(self, format_spec):
-            return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
 
     class Connector:
-        # loaded from the DeviceData message
-        miniCurrent = None
-        maxCurrent = None
-        connectorStatus = None
-        lockStatus = None
-        PncStatus = None
 
-        # loaded from the SynchroStatus message
-        connectionStatus = None
-        chargeStatus = None
-        statusCode = None
-        startTime = None
-        endTime = None
-        reserveCurrent = None
+        def __init__(self, connectorName):
+            self.connectorName = connectorName
 
-        # loaded from the SynchroData message
-        voltage = None
-        current = None
-        power = None
-        electricWork = None
-        chargingTime = None
+            # loaded from the DeviceData message
+            self.miniCurrent = ChargerParam("minimal current", parse_message_type=DeviceData, parse_json_key="miniCurrent", ha_topic=f"{self.connectorName}.minimal_current")
+            self.maxCurrent = ChargerParam("maximal current", parse_message_type=DeviceData, parse_json_key="maxCurrent", ha_topic=f"{self.connectorName}.maximal_current")
+            self.connectorStatus = ChargerParam("connector status", parse_message_type=DeviceData, parse_json_key="connectorStatus", ha_topic=f"{self.connectorName}.connector_status")
+            self.lockStatus = ChargerParam("lock status", parse_message_type=DeviceData, parse_json_key="lockStatus", ha_topic=f"{self.connectorName}.lock_status")
+            self.PncStatus = ChargerParam("Plug&Charge status", parse_message_type=DeviceData, parse_json_key="PncStatus", ha_topic=f"{self.connectorName}.pnc_status")
+
+            # loaded from the SynchroStatus message
+            self.connectionStatus = ChargerParam("connection status", parse_message_type=SynchroStatus, parse_json_key="connectionStatus", ha_topic=f"{self.connectorName}.connection_status")
+            self.statusCode = ChargerParam("status code", parse_message_type=SynchroStatus, parse_json_key="statusCode", ha_topic=f"{self.connectorName}.status_code")
+            self.chargeStatus = ChargerParam("charge status", parse_message_type=SynchroStatus, parse_json_key="chargeStatus", ha_topic=f"{self.connectorName}.charge_status")
+            self.startTime = ChargerParam("charge start time", parse_message_type=SynchroStatus, parse_json_key="startTime", ha_topic=f"{self.connectorName}.charge_start_time")
+            self.endTime = ChargerParam("charge end time", parse_message_type=SynchroStatus, parse_json_key="endTime", ha_topic=f"{self.connectorName}.charge_end_time")
+            self.reserveCurrent = ChargerParam("charge reserved current", parse_message_type=SynchroStatus, parse_json_key="reserveCurrent", ha_topic=f"{self.connectorName}.charge_reserved_current", unit="A")
+
+            # loaded from the SynchroData message
+            self.voltage = ChargerParam("charge voltage", parse_message_type=SynchroData, parse_json_key="voltage", ha_topic=f"{self.connectorName}.charge_voltage", unit="V")
+            self.current = ChargerParam("charge current", parse_message_type=SynchroData, parse_json_key="current", ha_topic=f"{self.connectorName}.charge_current", unit="A")
+            self.power = ChargerParam("charge power", parse_message_type=SynchroData, parse_json_key="power", ha_topic=f"{self.connectorName}.charge_power", unit="kW")
+            self.electricWork = ChargerParam("charge energy", parse_message_type=SynchroData, parse_json_key="electricWork", ha_topic=f"{self.connectorName}.charge_energy", unit="kWh")
+            self.chargingTime = ChargerParam("charge duration", parse_message_type=SynchroData, parse_json_key="chargingTime", ha_topic=f"{self.connectorName}.charge_duration")
+
+            self.params = [
+                            self.miniCurrent,
+                            self.maxCurrent,
+                            self.connectorStatus,
+                            self.lockStatus,
+                            self.PncStatus,
+                            self.connectionStatus,
+                            self.statusCode,
+                            self.chargeStatus,
+                            self.startTime,
+                            self.endTime,
+                            self.voltage,
+                            self.current,
+                            self.reserveCurrent,
+                            self.power,
+                            self.electricWork,
+                            self.chargingTime,
+                          ]
 
         def __str__(self):
-            return f"connector status:          {self.connectorStatus}\n" \
-                   f"minimal current:           {self.miniCurrent}\n" \
-                   f"maximal current:           {self.maxCurrent}\n" \
-                   f"lock status:               {self.lockStatus}\n" \
-                   f"PNC status:                {self.PncStatus}\n" \
-                   f"connection status:         {self.connectionStatus}\n" \
-                   f"status code:               {self.statusCode}\n" \
-                   f"charge status:             {self.chargeStatus}\n" \
-                   f"charge start time:         {self.startTime}\n" \
-                   f"charge end time:           {self.endTime}\n" \
-                   f"charge reserved current:   {self.reserveCurrent}A\n" \
-                   f"charge voltage:            {self.voltage}V\n" \
-                   f"charge current:            {self.current}A\n" \
-                   f"charge power:              {self.power}kW\n" \
-                   f"charge energy:             {self.electricWork}kWh\n" \
-                   f"charge duration:           {self.chargingTime}\n"
+            ret = ""
+            for param in self.params:
+                ret += f"{param:<31}\n"
+            return ret
 
-        def update(self, message, connector_data):
-            if type(message) == DeviceData:
-                self.miniCurrent = connector_data["miniCurrent"]
-                self.maxCurrent = connector_data["maxCurrent"]
-                self.connectorStatus = connector_data["connectorStatus"]
-                self.lockStatus = connector_data["lockStatus"]
-                self.PncStatus = connector_data["PncStatus"]
-
-            elif type(message) == SynchroStatus:
-                self.connectionStatus = connector_data["connectionStatus"]
-                self.chargeStatus = connector_data["chargeStatus"]
-                self.statusCode = connector_data["statusCode"]
-                self.startTime = connector_data["startTime"]
-                self.endTime = connector_data["endTime"]
-                self.reserveCurrent = connector_data["reserveCurrent"]
-
-            elif type(message) == SynchroData:
-                self.voltage = connector_data["voltage"]
-                self.current = connector_data["current"]
-                self.power = connector_data["power"]
-                self.electricWork = connector_data["electricWork"]
-                self.chargingTime = connector_data["chargingTime"]
+        def update(self, message):
+            if type(message) == DeviceData or type(message) == SynchroStatus or type(message) == SynchroData:
+                connector_data = message.payload_data[self.connectorName]
+                for param in self.params:
+                    param.update(message, connector_data)
 
     class MeterInfo:
-        voltage = None
-        current = None
-        power = None
+
+        def __init__(self):
+            self.voltage = ChargerParam("voltage", parse_message_type=SynchroData, parse_json_key="voltage", ha_topic=f"voltage", unit="V")
+            self.current = ChargerParam("current", parse_message_type=SynchroData, parse_json_key="current", ha_topic=f"current", unit="A")
+            self.power = ChargerParam("power", parse_message_type=SynchroData, parse_json_key="power", ha_topic=f"power", unit="kW")
+
+            self.params = [
+                            self.voltage,
+                            self.current,
+                            self.power,
+                          ]
 
         def __str__(self):
-            return f"voltage:   {self.voltage}V\n" \
-                   f"current:   {self.current}A\n" \
-                   f"power:     {self.power}kW\n"
+            ret = ""
+            for param in self.params:
+                ret += f"{param:<31}\n"
+            return ret
 
-        def update(self, message, meterInfo_data):
+        def update(self, message):
             if type(message) == SynchroData:
-                self.voltage = meterInfo_data["voltage"]
-                self.current = meterInfo_data["current"]
-                self.power = meterInfo_data["power"]
-
-    chargeBoxSN = None
-
-    connectorMain = Connector()
-    connectorVice = Connector()
-
-    # loaded from the DeviceData message
-    sVersion = Param("software version", parse_message_type=DeviceData, parse_json_key="sVersion", unit="", ha_topic="software_vesion")
-    hVersion = None
-    loadbalance = None
-    chargeTimes = None
-    cumulativeTime = None
-    totalPower = None
-    rssi = None
-    evseType = None
-    connectorNumber = None
-    evsePhase = None
-    isHasLock = None
-    isHasMeter = None
-
-    # loaded from the SynchroData message
-    meterInfo = MeterInfo()
-
-    # loaded from the NWireToDics message
-    NWireExist = None
-    NWireClosed = None
+                meterInfo_data = message.payload_data["meterInfo"]
+                for param in self.params:
+                    param.update(message, meterInfo_data)
 
     def __init__(self, chargeBoxSN):
         self.chargeBoxSN = chargeBoxSN
 
+        self.connectorMain = Charger.Connector("connectorMain")
+        self.connectorVice = Charger.Connector("connectorVice")
+
+        # loaded from the DeviceData message
+        self.sVersion = ChargerParam("software version", parse_message_type=DeviceData, parse_json_key="sVersion", ha_topic="software_vesion")
+        self.hVersion = ChargerParam("hardware version", parse_message_type=DeviceData, parse_json_key="hVersion", ha_topic="hardware_vesion")
+        self.chargeTimes = ChargerParam("number of charges", parse_message_type=DeviceData, parse_json_key="chargeTimes", ha_topic="number_of_charges")
+        self.cumulativeTime = ChargerParam("cumulative charge duration", parse_message_type=DeviceData, parse_json_key="cumulativeTime", ha_topic="cumulative_charge_duration", unit="h", transform=lambda x : x / (1e3 * 60 * 60))
+        self.totalPower = ChargerParam("total power", parse_message_type=DeviceData, parse_json_key="totalPower", ha_topic="total_power", unit="?")
+        self.rssi = ChargerParam("connection RSSI", parse_message_type=DeviceData, parse_json_key="rssi", ha_topic="connection_rssi", unit="dB")
+        self.evseType = ChargerParam("EVSE type", parse_message_type=DeviceData, parse_json_key="evseType", ha_topic="evse_type")
+        self.evsePhase = ChargerParam("EVSE number of phases", parse_message_type=DeviceData, parse_json_key="evsePhase", ha_topic="evse_number_of_phases")
+        self.loadbalance = ChargerParam("load balancing", parse_message_type=DeviceData, parse_json_key="loadbalance", ha_topic="load_balancing")
+        self.isHasLock = ChargerParam("has locking", parse_message_type=DeviceData, parse_json_key="isHasLock", ha_topic="has_locking")
+        self.isHasMeter = ChargerParam("has meter", parse_message_type=DeviceData, parse_json_key="isHasMeter", ha_topic="has_meter")
+        self.connectorNumber = ChargerParam("number of connectors", parse_message_type=DeviceData, parse_json_key="connectorNumber", ha_topic="number_of_connectors")
+
+        # loaded from the NWireToDics message
+        self.NWireExist = ChargerParam("NWire exists", parse_message_type=NWireToDics, parse_json_key="NWireExist", ha_topic="nwire_exists")
+        self.NWireClosed = ChargerParam("NWire closed", parse_message_type=NWireToDics, parse_json_key="NWireClosed", ha_topic="nwire_closed")
+
+        # loaded from the SynchroData message
+        self.meterInfo = Charger.MeterInfo()
+
+        self.params = [
+                    self.sVersion,
+                    self.hVersion,
+                    self.chargeTimes,
+                    self.cumulativeTime,
+                    self.totalPower,
+                    self.rssi,
+                    self.evseType,
+                    self.evsePhase,
+                    self.isHasLock,
+                    self.isHasMeter,
+                    self.loadbalance,
+                    self.NWireExist,
+                    self.NWireClosed,
+                    self.connectorNumber,
+                    self.connectorMain,
+                    self.connectorVice,
+                    self.meterInfo,
+                ]
+
     def __str__(self):
         return f"Charger SN{self.chargeBoxSN}\n" \
-               f"hardware version:              {self.hVersion}\n" \
                f"{self.sVersion:<31}\n" \
-               f"number of charges:             {self.chargeTimes}\n" \
-               f"cumulative charge duration:    {self.cumulativeTime}\n" \
-               f"total power:                   {self.totalPower}kW\n" \
-               f"connection RSSI:               {self.rssi}dB\n" \
-               f"EV SE type:                    {self.evseType}\n" \
-               f"EV SE phase:                   {self.evsePhase}\n" \
-               f"number of connectors:          {self.connectorNumber}\n" \
-               f"has load balancing:            {self.loadbalance}\n" \
-               f"has locking:                   {self.isHasLock}\n" \
-               f"has a meter:                   {self.isHasMeter}\n" \
-               f"NWire exists:                  {self.NWireExist}\n" \
-               f"NWire closed:                  {self.NWireClosed}\n\n" \
+               f"{self.hVersion:<31}\n" \
+               f"{self.chargeTimes:<31}\n" \
+               f"{self.cumulativeTime:<31}\n" \
+               f"{self.totalPower:<31}\n" \
+               f"{self.rssi:<31}\n" \
+               f"{self.evseType:<31}\n" \
+               f"{self.evsePhase:<31}\n" \
+               f"{self.connectorNumber:<31}\n" \
+               f"{self.loadbalance:<31}\n" \
+               f"{self.isHasLock:<31}\n" \
+               f"{self.isHasMeter:<31}\n" \
+               f"{self.NWireExist:<31}\n" \
+               f"{self.NWireClosed:<31}\n\n" \
                f"Main connector:\n" \
                f"{self.connectorMain}\n" \
                f"Vice connector:\n" \
@@ -156,36 +183,5 @@ class Charger:
         if self.chargeBoxSN != message.payload_data["chargeBoxSN"]:
             return
 
-        if type(message) == DeviceData:
-            self.connectorMain.update(message, message.payload_data["connectorMain"])
-            self.connectorVice.update(message, message.payload_data["connectorVice"])
-
-            self.sVersion.update(message)
-            self.hVersion = message.payload_data["hVersion"]
-            self.loadbalance = message.payload_data["loadbalance"]
-            self.chargeTimes = message.payload_data["chargeTimes"]
-            self.cumulativeTime = message.payload_data["cumulativeTime"]
-            self.totalPower = message.payload_data["totalPower"]
-            self.rssi = message.payload_data["rssi"]
-            self.evseType = message.payload_data["evseType"]
-            self.connectorNumber = message.payload_data["connectorNumber"]
-            self.evsePhase = message.payload_data["evsePhase"]
-            self.isHasLock = message.payload_data["isHasLock"]
-            self.isHasMeter = message.payload_data["isHasMeter"]
-            print(f"Charger {self.chargeBoxSN} device data updated")
-
-        elif type(message) == SynchroStatus:
-            self.connectorMain.update(message, message.payload_data["connectorMain"])
-            self.connectorVice.update(message, message.payload_data["connectorVice"])
-            print(f"Charger {self.chargeBoxSN} charging status updated")
-
-        elif type(message) == SynchroData:
-            self.connectorMain.update(message, message.payload_data["connectorMain"])
-            self.connectorVice.update(message, message.payload_data["connectorVice"])
-            self.meterInfo.update(message, message.payload_data["meterInfo"])
-            print(f"Charger {self.chargeBoxSN} charging data updated")
-
-        elif type(message) == NWireToDics:
-            self.NWireExist = message.payload_data["NWireExist"]
-            self.NWireClosed = message.payload_data["NWireClosed"]
-            print(f"Charger {self.chargeBoxSN} NWire data updated")
+        for param in self.params:
+            param.update(message)
