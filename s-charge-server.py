@@ -72,6 +72,7 @@ class SChargeConn:
             if msg_parsed is not None:
                 print(msg_parsed.payload_data)
                 self.charger.update(msg_parsed)
+                print(f"{self.charger}")
 
     async def server_loop(self):
         """Starts the WebSocket server."""

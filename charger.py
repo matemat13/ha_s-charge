@@ -25,6 +25,24 @@ class Charger:
         electricWork = None
         chargingTime = None
 
+        def __str__(self):
+            return f"connector status:          {self.connectorStatus}\n" \
+                   f"minimal current:           {self.miniCurrent}\n" \
+                   f"maximal current:           {self.maxCurrent}\n" \
+                   f"lock status:               {self.lockStatus}\n" \
+                   f"PNC status:                {self.PncStatus}\n" \
+                   f"connection status:         {self.connectionStatus}\n" \
+                   f"status code:               {self.statusCode}\n" \
+                   f"charge status:             {self.chargeStatus}\n" \
+                   f"charge start time:         {self.startTime}\n" \
+                   f"charge end time:           {self.endTime}\n" \
+                   f"charge reserved current:   {self.reserveCurrent}A\n" \
+                   f"charge voltage:            {self.voltage}V\n" \
+                   f"charge current:            {self.current}A\n" \
+                   f"charge power:              {self.power}kW\n" \
+                   f"charge energy:             {self.electricWork}kWh\n" \
+                   f"charge duration:           {self.chargingTime}\n"
+
         def update(self, message, connector_data):
             if type(message) == DeviceData:
                 self.miniCurrent = connector_data["miniCurrent"]
@@ -52,6 +70,11 @@ class Charger:
         voltage = None
         current = None
         power = None
+
+        def __str__(self):
+            return f"voltage:   {self.voltage}V\n" \
+                   f"current:   {self.current}A\n" \
+                   f"power:     {self.power}kW\n"
 
         def update(self, message, meterInfo_data):
             if type(message) == SynchroData:
@@ -87,6 +110,29 @@ class Charger:
 
     def __init__(self, chargeBoxSN):
         self.chargeBoxSN = chargeBoxSN
+
+    def __str__(self):
+        return f"Charger SN{self.chargeBoxSN}\n" \
+               f"hardware version:              {self.hVersion}\n" \
+               f"software version:              {self.sVersion}\n" \
+               f"number of charges:             {self.chargeTimes}\n" \
+               f"cumulative charge duration:    {self.cumulativeTime}\n" \
+               f"total power:                   {self.totalPower}kW\n" \
+               f"connection RSSI:               {self.rssi}dB\n" \
+               f"EV SE type:                    {self.evseType}\n" \
+               f"EV SE phase:                   {self.evsePhase}\n" \
+               f"number of connectors:          {self.connectorNumber}\n" \
+               f"has load balancing:            {self.loadbalance}\n" \
+               f"has locking:                   {self.isHasLock}\n" \
+               f"has a meter:                   {self.isHasMeter}\n" \
+               f"NWire exists:                  {self.NWireExist}\n" \
+               f"NWire closed:                  {self.NWireClosed}\n\n" \
+               f"Main connector:\n" \
+               f"{self.connectorMain}\n" \
+               f"Vice connector:\n" \
+               f"{self.connectorVice}\n" \
+               f"Meter info:\n" \
+               f"{self.meterInfo}\n"
 
     def update(self, message):
         # ignore data for other chargers
