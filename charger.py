@@ -1,7 +1,24 @@
 #!/usr/bin/env python3
 from messages_rx import *
+from typing import Type
 
 class Charger:
+    class Param:
+        def __init__(self, human_name : str, parse_message_type : Type[PayloadMsg], parse_json_key : str, unit : str, ha_topic : str):
+            self.human_name = human_name
+            self.human_name_colon = self.human_name + ":"
+            self.parse_message_type = parse_message_type
+            self.parse_json_key = parse_json_key
+            self.unit = unit
+            self.ha_topic = ha_topic
+            self.value = None
+
+        def update(self, parse_message):
+            self.value = parse_message.payload_data[self.parse_json_key]
+
+        def __format__(self, format_spec):
+            return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
+
     class Connector:
         # loaded from the DeviceData message
         miniCurrent = None
@@ -88,7 +105,7 @@ class Charger:
     connectorVice = Connector()
 
     # loaded from the DeviceData message
-    sVersion = None
+    sVersion = Param("software version", parse_message_type=DeviceData, parse_json_key="sVersion", unit="", ha_topic="software_vesion")
     hVersion = None
     loadbalance = None
     chargeTimes = None
@@ -114,7 +131,7 @@ class Charger:
     def __str__(self):
         return f"Charger SN{self.chargeBoxSN}\n" \
                f"hardware version:              {self.hVersion}\n" \
-               f"software version:              {self.sVersion}\n" \
+               f"{self.sVersion:<31}\n" \
                f"number of charges:             {self.chargeTimes}\n" \
                f"cumulative charge duration:    {self.cumulativeTime}\n" \
                f"total power:                   {self.totalPower}kW\n" \
@@ -143,7 +160,7 @@ class Charger:
             self.connectorMain.update(message, message.payload_data["connectorMain"])
             self.connectorVice.update(message, message.payload_data["connectorVice"])
 
-            self.sVersion = message.payload_data["sVersion"]
+            self.sVersion.update(message)
             self.hVersion = message.payload_data["hVersion"]
             self.loadbalance = message.payload_data["loadbalance"]
             self.chargeTimes = message.payload_data["chargeTimes"]
