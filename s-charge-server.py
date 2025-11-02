@@ -16,6 +16,7 @@ class SChargeConn:
 
     def __init__(self, charge_box_serial, rcv_ip):
         self.websocket = None
+        self.future_confirmations = list()
 
         self.charge_box_serial = charge_box_serial
         self.user_id = 1
@@ -30,7 +31,8 @@ class SChargeConn:
         self.broadcast_ip = f"{ip_network.broadcast_address}"
         self.broadcast_port = 3050
 
-        self.timeout_s = 1.9
+        self.udp_handshake_timeout_s = 1.9
+        self.confirmation_timout_s = 3.0
         self.handshake_period_s = 7.0
         self.request_data_period_s = 0.3
 
@@ -47,8 +49,9 @@ class SChargeConn:
         if not self.charger_state.initialized():
             return False, "charger state not initialized"
         
+        msg_id = int(1000 * time.time())
         msg = Authorize(
-                    current_time_unix = time.time(),
+                    uniqueId = msg_id,
                     userId = self.user_id,
                     chargeBoxSN = self.charge_box_serial,
                     purpose = "Start",
@@ -56,8 +59,46 @@ class SChargeConn:
                     connectorId = connectorId
                 )
         message = msg.encode()
+
+        confirmation = FutureConfirmation(msg_id)
+        self.future_confirmations.append(confirmation)
         await self.send_message(self.websocket, message)
-        return False, "not implemented"
+        try:
+            await asyncio.wait_for(confirmation, timeout=self.confirmation_timout_s)
+        except TimeoutError:
+            print(f"Timeout when awaiting confirmation for message {msg}")
+            self.future_confirmations.remove(confirmation)
+            return False, "response timed out"
+        return confirmation.result(), "response received"
+
+    async def stop_charging(self, connectorId):
+        if self.websocket is None:
+            return False, "not connected"
+
+        if not self.charger_state.initialized():
+            return False, "charger state not initialized"
+        
+        msg_id = int(1000 * time.time())
+        msg = Authorize(
+                    uniqueId = msg_id,
+                    userId = self.user_id,
+                    chargeBoxSN = self.charge_box_serial,
+                    purpose = "Stop",
+                    current = self.charger_state.miniCurrent.value,
+                    connectorId = connectorId
+                )
+        message = msg.encode()
+
+        confirmation = FutureConfirmation(msg_id)
+        self.future_confirmations.append(confirmation)
+        await self.send_message(self.websocket, message)
+        try:
+            await asyncio.wait_for(confirmation, timeout=self.confirmation_timout_s)
+        except TimeoutError:
+            print(f"Timeout when awaiting confirmation for message {msg}")
+            self.future_confirmations.remove(confirmation)
+            return False, "response timed out"
+        return confirmation.result(), "response received"
 
     async def send_message(self, websocket, message):
         print(f">> {message}")
@@ -83,15 +124,27 @@ class SChargeConn:
             print(f"<< {message}")
             msg_json = json.loads(message)
 
-            if msg_json["messageTypeId"] != "6":
+            msg_serial = msg_json["payload"]["chargeBoxSN"]
+            if msg_serial != self.charge_box_serial:
+                print("Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
+                continue
+
+            # If it's an Ack message check if we're not expecting confirmation for a message
+            if msg_json["messageTypeId"] == Ack.messageTypeId:
+                for future_confirmation in self.future_confirmations:
+                    if future_confirmation.uniqueId == msg_json["uniqueId"]:
+                        future_confirmation.set_result(msg_json["payload"]["result"])
+
+            # Otherwise it's a payload message, sned an ack for it and then process it
+            else:
                 print("Got message, sending ack")
                 asyncio.create_task(self.send_ack(websocket, msg_json["uniqueId"]))
 
-            msg_parsed = parse_json(msg_json)
-            if msg_parsed is not None:
-                print(msg_parsed.payload_data)
-                self.charger_state.update(msg_parsed)
-                print(f"{self.charger_state}")
+                msg_parsed = parse_json(msg_json)
+                if msg_parsed is not None:
+                    print(msg_parsed.payload_data)
+                    self.charger_state.update(msg_parsed)
+                    print(f"{self.charger_state}")
 
     async def server_loop(self):
         """Starts the WebSocket server."""
@@ -118,7 +171,7 @@ class SChargeConn:
             while self.websocket is None:
 
                 msg = UDPHandShake(
-                            timeout_time_unix = time.time() + self.timeout_s,
+                            timeout_time_unix = time.time() + self.udp_handshake_timeout_s,
                             chargeBoxSN = self.charge_box_serial,
                             ip_address = ip_address,
                             port = port
@@ -128,7 +181,7 @@ class SChargeConn:
                 print(f">> {message}")
                 self.send_sock.sendto(message, (self.broadcast_ip, self.broadcast_port))
 
-                await asyncio.sleep(self.timeout_s)
+                await asyncio.sleep(self.udp_handshake_timeout_s)
 
         except asyncio.CancelledError:
             print("UDP handshake loop cancelled.")
@@ -155,6 +208,18 @@ class SChargeConn:
         except asyncio.CancelledError:
             print("Handshake loop cancelled.")
             raise
+    
+    async def keyboard_loop(self):
+        # await asyncio.sleep(3.0)
+        # print("Starting charge from the terminal!")
+        # res = await self.start_charging(6, 2)
+        # print(res)
+
+        # await asyncio.sleep(5.0)
+        # print("Stopping charge from the terminal!")
+        # res = await self.stop_charging(2)
+        # print(res)
+        return
 
     async def main(self):
         """Starts all tasks in the correct sequence."""
@@ -173,6 +238,8 @@ class SChargeConn:
 
         websocket = self.connected_ws_fut.result()
         self.loop_tasks.add(asyncio.create_task(self.handshake_loop(websocket)))
+
+        self.loop_tasks.add(asyncio.create_task(self.keyboard_loop()))
 
         await asyncio.Future()
 

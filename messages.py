@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 import json
 from datetime import datetime
+import asyncio
+
+
+class FutureConfirmation(asyncio.Future):
+    def __init__(self, uniqueId):
+        self.uniqueId = uniqueId
 
 
 class JsonMsg:
@@ -87,8 +93,8 @@ class Authorize(JsonMsg):
     messageTypeId = "5"
     action = "Authorize"
 
-    def __init__(self, current_time_unix : float, userId : int, chargeBoxSN : int, purpose : str, current : int, connectorId : int):
-        self.current_time_unix = current_time_unix
+    def __init__(self, uniqueId : int, userId : int, chargeBoxSN : int, purpose : str, current : int, connectorId : int):
+        self.uniqueId = uniqueId
         self.userId = userId
         self.chargeBoxSN = chargeBoxSN
         self.purpose = purpose
@@ -96,10 +102,9 @@ class Authorize(JsonMsg):
         self.connectorId = connectorId
 
     def encode(self):
-        timestamp = int(self.current_time_unix * 1000)
         raw_json =  {
                     "messageTypeId": self.messageTypeId,
-                    "uniqueId": f"{timestamp}",
+                    "uniqueId": f"{self.uniqueId}",
                     "action": self.action,
                     "payload":
                         {
