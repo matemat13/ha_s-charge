@@ -13,13 +13,12 @@ from messages import *
 from messages_rx import *
 from charger_state import ChargerState
 
-logger = logging.getLogger("S-Charge_server")
-
 class SChargeConn:
 
-    def __init__(self, charge_box_serial, rcv_ip):
+    def __init__(self, charge_box_serial, rcv_ip, logger):
         self.websocket = None
         self.future_confirmations = list()
+        self.logger = logger
 
         self.charge_box_serial = charge_box_serial
         self.user_id = 1
@@ -77,7 +76,7 @@ class SChargeConn:
             return confirmation.result(), "response received"
 
         except TimeoutError:
-            logger.warning(f"Timeout when awaiting confirmation for message {msg}")
+            self.logger.warning(f"Timeout when awaiting confirmation for message {msg}")
             self.future_confirmations.remove(confirmation)
             return False, "response timed out"
 
@@ -87,20 +86,20 @@ class SChargeConn:
 
         retries = 0
         while self.charger_state.connectors[connector_idx].current.value is None:
-            logger.debug(f"Waiting for charger state intialization.")
+            self.logger.debug(f"Waiting for charger state intialization.")
             retries += 1
             if retries > max_retries:
                 return False
             await asyncio.sleep(1.0)
 
         while True:
-            logger.debug(f"Sending start charging command at {current}A.")
+            self.logger.debug(f"Sending start charging command at {current}A.")
             res = await self.send_authorize_msg(current, "Start", connectorId)
-            logger.debug(res)
+            self.logger.debug(res)
             if abs(self.charger_state.connectors[connector_idx].current.value - current) > current_tolerance:
                 retries += 1
-                logger.debug(f"The charge current does not match the desired ({self.charger_state.connectors[connector_idx].current} != {current}A). Tries: {retries}/{max_retries}.")
-                logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
+                self.logger.debug(f"The charge current does not match the desired ({self.charger_state.connectors[connector_idx].current} != {current}A). Tries: {retries}/{max_retries}.")
+                self.logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
                 if retries > max_retries:
                     return False
                 await asyncio.sleep(3.0)
@@ -115,7 +114,7 @@ class SChargeConn:
 
         retries = 0
         while self.charger_state.connectors[connector_idx].current.value is None:
-            logger.debug(f"Waiting for charger state intialization.")
+            self.logger.debug(f"Waiting for charger state intialization.")
             retries += 1
             if retries > max_retries:
                 return False
@@ -123,13 +122,13 @@ class SChargeConn:
 
         retries = 0
         while True:
-            logger.debug(f"Sending stop charging command.")
+            self.logger.debug(f"Sending stop charging command.")
             res = await self.send_authorize_msg(self.charger_state.connectors[connector_idx].miniCurrent.value, "Stop", connectorId)
-            logger.debug(res)
+            self.logger.debug(res)
             if self.charger_state.connectors[connector_idx].chargeStatus.value != "finish":
                 retries += 1
-                logger.debug(f"The charge status does not match the desired ({self.charger_state.connectors[connector_idx].chargeStatus} != finish). Tries: {retries}/{max_retries}.")
-                logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
+                self.logger.debug(f"The charge status does not match the desired ({self.charger_state.connectors[connector_idx].chargeStatus} != finish). Tries: {retries}/{max_retries}.")
+                self.logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
                 if retries > max_retries:
                     return False
                 await asyncio.sleep(3.0)
@@ -139,7 +138,7 @@ class SChargeConn:
         return True
 
     async def send_message(self, websocket, message):
-        logger.debug(f">> {message}")
+        self.logger.debug(f">> {message}")
         await websocket.send(message)
 
     async def send_ack(self, websocket, uniqueId):
@@ -156,15 +155,15 @@ class SChargeConn:
             self.websocket = websocket
             self.connected_ws_fut.set_result(websocket)
             remote_ip, remote_port = websocket.remote_address
-            logger.info(f"Connection established with {remote_ip}:{remote_port}!")
+            self.logger.info(f"Connection established with {remote_ip}:{remote_port}!")
 
         async for message in websocket:
-            logger.debug(f"<< {message}")
+            self.logger.debug(f"<< {message}")
             msg_json = json.loads(message)
 
             msg_serial = msg_json["payload"]["chargeBoxSN"]
             if msg_serial != self.charge_box_serial:
-                logger.info("Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
+                self.logger.info("Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
                 continue
 
             # If it's an Ack message check if we're not expecting confirmation for a message
@@ -189,20 +188,20 @@ class SChargeConn:
             socket = server.sockets[0]
             rcv_port = (socket.getsockname()[1])
             self.rcv_port_fut.set_result(rcv_port)
-            logger.info(f"Started WebSocket server on {self.rcv_ip}:{rcv_port}")
+            self.logger.info(f"Started WebSocket server on {self.rcv_ip}:{rcv_port}")
 
             try:
                 await asyncio.Future()  # run until cancelled
 
             except asyncio.CancelledError:
-                logger.info("Server loop cancelled. Closing WebSocket server.")
+                self.logger.info("Server loop cancelled. Closing WebSocket server.")
                 server.close()
                 await server.wait_closed()
                 raise
 
     async def udp_handshake_loop(self, ip_address, port):
         """Broadcasts UDP handshake messages until connected."""
-        logger.debug(f"Sending UDP broadcast handshake to {self.broadcast_ip}:{self.broadcast_port}.")
+        self.logger.debug(f"Sending UDP broadcast handshake to {self.broadcast_ip}:{self.broadcast_port}.")
 
         try:
             while self.websocket is None:
@@ -215,13 +214,13 @@ class SChargeConn:
                         )
 
                 message = msg.encode().encode("ASCII")
-                logger.debug(f">>UDP {message}")
+                self.logger.debug(f">>UDP {message}")
                 self.send_sock.sendto(message, (self.broadcast_ip, self.broadcast_port))
 
                 await asyncio.sleep(self.udp_handshake_timeout_s)
 
         except asyncio.CancelledError:
-            logger.info("UDP handshake loop cancelled.")
+            self.logger.info("UDP handshake loop cancelled.")
             raise
 
         finally:
@@ -243,51 +242,51 @@ class SChargeConn:
                 await asyncio.sleep(self.handshake_period_s)
 
         except asyncio.CancelledError:
-            logger.info("Handshake loop cancelled.")
+            self.logger.info("Handshake loop cancelled.")
             raise
     
     async def keyboard_loop(self):
         while not self.charger_state.initialized():
             await asyncio.sleep(1.0)
         await asyncio.sleep(1.0)
-        logger.info("Detected charger state initialized, starting charging!")
+        self.logger.info("Detected charger state initialized, starting charging!")
 
         desired_current = 6
         res = await self.start_charging(desired_current, 2)
         if not res:
-            logger.info("Failed to start charging. Giving up.")
+            self.logger.info("Failed to start charging. Giving up.")
             return
 
-        logger.info(f"Desired current ({desired_current}A) set, charging for 10s.")
+        self.logger.info(f"Desired current ({desired_current}A) set, charging for 10s.")
         await asyncio.sleep(10.0)
-        logger.info("Stopping charging!")
+        self.logger.info("Stopping charging!")
 
         res = await self.stop_charging(2)
         if not res:
-            logger.info("Failed to start charging. Giving up.")
+            self.logger.info("Failed to start charging. Giving up.")
             return
 
-        logger.info("Stopped charging!")
+        self.logger.info("Stopped charging!")
 
     async def main(self):
         """Starts all tasks in the correct sequence."""
         self.rcv_port_fut = asyncio.Future()
         self.loop_tasks.add(asyncio.create_task(self.server_loop()))
 
-        logger.info("Waiting for WebSocket server initialization.")
+        self.logger.info("Waiting for WebSocket server initialization.")
         await self.rcv_port_fut
 
         self.connected_ws_fut = asyncio.Future()
         rcv_port = self.rcv_port_fut.result()
         self.loop_tasks.add(asyncio.create_task(self.udp_handshake_loop(self.rcv_ip, rcv_port)))
 
-        logger.info("Waiting for charger to connect to WebSocket.")
+        self.logger.info("Waiting for charger to connect to WebSocket.")
         await self.connected_ws_fut
 
         websocket = self.connected_ws_fut.result()
         self.loop_tasks.add(asyncio.create_task(self.handshake_loop(websocket)))
 
-        self.loop_tasks.add(asyncio.create_task(self.keyboard_loop()))
+        # self.loop_tasks.add(asyncio.create_task(self.keyboard_loop()))
 
         await asyncio.Future()
 
@@ -297,6 +296,7 @@ if __name__ == "__main__":
         print("Please specify the charger serial number and this computer's IP address!")
         exit(1)
 
+    logger = logging.getLogger("S-Charge_server")
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -312,7 +312,7 @@ if __name__ == "__main__":
 
     charge_box_serial = sys.argv[1]
     rcv_ip = sys.argv[2]
-    s_charge_conn = SChargeConn(charge_box_serial, rcv_ip)
+    s_charge_conn = SChargeConn(charge_box_serial, rcv_ip, logger)
     try:
         asyncio.run(s_charge_conn.main())
     except KeyboardInterrupt:
