@@ -6,6 +6,7 @@ import asyncio
 
 class FutureConfirmation(asyncio.Future):
     def __init__(self, uniqueId):
+        super().__init__() # to initialize the Future
         self.uniqueId = uniqueId
 
 
