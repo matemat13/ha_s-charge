@@ -246,8 +246,10 @@ class SChargeConn:
             raise
     
     async def keyboard_loop(self):
+        # TODO: fix
         while not self.charger_state.initialized():
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1)
+        await self.charger_state_initialized_fut
         await asyncio.sleep(1.0)
         self.logger.info("Detected charger state initialized, starting charging!")
 

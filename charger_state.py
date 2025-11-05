@@ -88,7 +88,7 @@ class ChargerState:
                     param.update(message, connector_data)
 
         def initialized(self):
-            return all(x is not None for x in self.params)
+            return all(x.initialized() for x in self.params)
 
     class MeterInfo:
 
@@ -116,7 +116,7 @@ class ChargerState:
                     param.update(message, meterInfo_data)
 
         def initialized(self):
-            return all(x is not None for x in self.params)
+            return all(x.initialized() for x in self.params)
 
     def __init__(self, chargeBoxSN):
         self.chargeBoxSN = chargeBoxSN
