@@ -7,18 +7,48 @@ import json
 from scharge_server import *
 
 class MQTTSwitchMgr:
-    def __init__(self, mqtt_client: aiomqtt.Client, mqtt_cfg: dict, switch_method, availability):
+    def __init__(self, name: str, human_name: str, mqtt_client: aiomqtt.Client, switch_method, availability):
+        self.name = name
+        self.human_name = human_name
         self.switch_method = switch_method
         self.availability = availability
         self.mqtt_client = mqtt_client
-        self.mqtt_cfg = mqtt_cfg
 
-        self.command_topic = self.mqtt_cfg["command_topic"]
+        self.state_topic = f"scharge/{self.name}/state"
+        self.command_topic = f"scharge/{self.name}/set"
+        self.availability_topic = f"scharge/{self.name}/available"
 
-    # def run(self):
-    #     await self.mqtt_client.subscribe(self.mqtt_cfg["command_topic"])
-    #     async for message in client.messages:
-    #         self.logger.info(message.payload)
+    def get_availability_msg(self):
+        if self.availability:
+            return json.dumps("ON")
+        else:
+            return json.dumps("OFF")
+
+    def get_description(self):
+        return (
+                f"scharge_{self.name}",
+                {
+                    "p": "switch",
+                    "name": f"{self.human_name}",
+                    "unique_id": f"scharge_{self.name}",
+                    "device_class": "switch",
+                    "state_topic": self.state_topic,
+                    "command_topic": self.command_topic,
+                    "availability":
+                    {
+                      "topic": self.availability_topic,
+                      "payload_available": "online",
+                      "payload_not_available": "offline",
+                    },
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "state_on": "ON",
+                    "state_off": "OFF",
+                    "optimistic": False,
+                    "qos": 0,
+                    "retain": True,
+                }
+               )
 
 class MQTTClient:
     def __init__(self, hostname: str, port: str, username: str, password: str, scharge_conn: SChargeConn, logger: logging.Logger):
@@ -38,13 +68,28 @@ class MQTTClient:
                 await asyncio.sleep(1)
             discovery_topic = f"homeassistant/device/scharge{self.scharge_conn.charge_box_serial}/config"
 
+            self.topic_mgrs.append(MQTTSwitchMgr("charging", "Charging", client, self.switch_charging, True))
+
             msg = self.generate_discovery_payload(self.scharge_conn)
             self.logger.info(f"Publishing discovery message {msg}")
             await client.publish(discovery_topic, msg)
 
+            for mgr in self.topic_mgrs:
+                await client.publish(mgr.availability_topic, mgr.get_availability_msg())
+
             await client.subscribe("homeassistant/status")
             async for message in client.messages:
                 self.logger.info(message.payload)
+                for mgr in self.topic_mgrs:
+                    if mgr.command_topic == message.topic:
+                        mgr.switch_method(message)
+
+    async def switch_charging(self, msg: aiomqtt.Message):
+        connectorId = 2
+        if msg.payload == "ON":
+            await self.scharge_conn.start_charging(6, connectorId)
+        else:
+            await self.scharge_conn.stop_charging(connectorId)
 
     def generate_discovery_payload(self, sconn: SChargeConn):
         chinfo = sconn.charger_state
@@ -68,54 +113,15 @@ class MQTTClient:
               },
               "cmps":
               {
-                "scharge_start_charging":
-                {
-                    "p": "switch",
-                    "name": "Start Charging",
-                    "unique_id": "scharge_start_charging",
-                    "device_class": "switch",
-                    "state_topic": "scharge/start_charging/state",
-                    "command_topic": "scharge/start_charging/set",
-                    "availability":
-                    {
-                      "topic": "scharge/start_charging/available",
-                      "payload_available": "online",
-                      "payload_not_available": "offline",
-                    },
-                    "payload_on": "ON",
-                    "payload_off": "OFF",
-                    "state_on": "ON",
-                    "state_off": "OFF",
-                    "optimistic": False,
-                    "qos": 0,
-                    "retain": True,
-                },
-                "scharge_stop_charging":
-                {
-                    "p": "switch",
-                    "name": "Stop Charging",
-                    "unique_id": "scharge_stop_charging",
-                    "device_class": "switch",
-                    "state_topic": "scharge/stop_charging/state",
-                    "command_topic": "scharge/stop_charging/set",
-                    "availability":
-                    {
-                      "topic": "scharge/stop_charging/available",
-                      "payload_available": "online",
-                      "payload_not_available": "offline",
-                    },
-                    "payload_on": "ON",
-                    "payload_off": "OFF",
-                    "state_on": "ON",
-                    "state_off": "OFF",
-                    "optimistic": False,
-                    "qos": 0,
-                    "retain": True,
-                },
               },
               "state_topic": "scharge/state",
               "qos": 2
             }
+
+        for mgr in self.topic_mgrs:
+            cmp_name, cmp_desc = mgr.get_description()
+            ret["cmps"][cmp_name] = cmp_desc
+
         return json.dumps(ret, separators=(',', ':'))
 
 if __name__ == "__main__":

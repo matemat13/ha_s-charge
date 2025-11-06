@@ -80,7 +80,7 @@ class SChargeConn:
             self.future_confirmations.remove(confirmation)
             return False, "response timed out"
 
-    async def start_charging(self, current, connectorId, current_tolerance = 1.0) -> bool:
+    async def start_charging(self, current: int, connectorId: int, current_tolerance = 1.0) -> bool:
         connector_idx = connectorId-1
         max_retries = 5
 
@@ -108,7 +108,7 @@ class SChargeConn:
 
         return True
 
-    async def stop_charging(self, connectorId) -> bool:
+    async def stop_charging(self, connectorId: int) -> bool:
         connector_idx = connectorId-1
         max_retries = 5
 
