@@ -13,13 +13,18 @@ class ChargerParam:
         self.transform = transform
         self.value = None
         self.value_type = value_type
+        self.cbk_on_change = None
 
     def update(self, message, payload_data = None):
         if type(message) == self.parse_message_type:
+            new_value = None
             if payload_data is None:
-                self.value = self.transform(self.value_type(message.payload_data[self.parse_json_key]))
+                new_value = self.transform(self.value_type(message.payload_data[self.parse_json_key]))
             else:
-                self.value = self.transform(self.value_type(payload_data[self.parse_json_key]))
+                new_value = self.transform(self.value_type(payload_data[self.parse_json_key]))
+            if new_value != self.value and self.cbk_on_change:
+                self.cbk_on_change(new_value)
+            self.value = new_value
 
     def __format__(self, format_spec):
         return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
@@ -89,6 +94,9 @@ class ChargerState:
 
         def initialized(self):
             return all(x.initialized() for x in self.params)
+
+        def is_charging(self):
+            return self.chargeStatus.value == "charging" or self.chargeStatus.value == "wait"
 
     class MeterInfo:
 
@@ -185,3 +193,18 @@ class ChargerState:
 
     def initialized(self):
         return all(x.initialized() for x in self.params)
+
+    def is_charging(self):
+        return any(conn.is_charging() for conn in self.connectors)
+
+    def get_current(self, connectorId = None):
+
+        if connectorId is None:
+            for it in range(len(self.connectors)):
+                if self.connectors[it].is_charging():
+                    connectorId = it+1
+
+        if connectorId is None:
+            connectorId = 1
+
+        return self.connectors[connectorId-1].current.value
