@@ -285,7 +285,16 @@ class ChargerState:
         self.hVersion = ChargerParam("hardware version", value_type=str, parse_message_type=DeviceData, parse_json_key="hVersion", ha_topic="hardware_vesion")
         self.chargeTimes = ChargerParam("number of charges", value_type=int, parse_message_type=DeviceData, parse_json_key="chargeTimes", ha_topic="number_of_charges")
         self.cumulativeTime = ChargerParam("cumulative charge duration", value_type=int, parse_message_type=DeviceData, parse_json_key="cumulativeTime", ha_topic="cumulative_charge_duration", unit="h", transform=lambda x : x / (1e3 * 60 * 60))
-        self.totalPower = ChargerParam("total power", value_type=int, parse_message_type=DeviceData, parse_json_key="totalPower", ha_topic="total_power", unit="?")
+        self.totalPower = ChargerParam(
+                "Total Energy Charged",
+                value_type=int,
+                device_type="energy",
+                unit="kWh",
+                parse_message_type=DeviceData,
+                parse_json_key="totalPower",
+                ha_topic="total_power",
+                transform=lambda x : x / 100.0
+                )
         self.rssi = ChargerParam("connection RSSI", value_type=int, parse_message_type=DeviceData, parse_json_key="rssi", ha_topic="connection_rssi", unit="dB")
         self.evseType = ChargerParam("EVSE type", value_type=str, parse_message_type=DeviceData, parse_json_key="evseType", ha_topic="evse_type")
         self.evsePhase = ChargerParam("EVSE number of phases", value_type=str, parse_message_type=DeviceData, parse_json_key="evsePhase", ha_topic="evse_number_of_phases")
