@@ -2,8 +2,10 @@
 from messages_rx import *
 from typing import Type, Callable
 
+from mqtt_managers import *
+
 class ChargerParam:
-    def __init__(self, human_name : str, value_type: Type, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", transform : Callable = lambda x : x):
+    def __init__(self, human_name : str, value_type: Type, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", device_type: str = "", transform : Callable = lambda x : x):
         self.human_name = human_name
         self.human_name_colon = self.human_name + ":"
         self.parse_message_type = parse_message_type
@@ -13,6 +15,7 @@ class ChargerParam:
         self.transform = transform
         self.value = None
         self.value_type = value_type
+        self.device_type = device_type
         self.cbk_on_update = None
 
     async def update(self, message, payload_data = None):
@@ -25,44 +28,170 @@ class ChargerParam:
             if self.cbk_on_update is not None:
                 await self.cbk_on_update(self.value)
 
-    def register_update_cbk(self, cbk):
-        self.cbk_on_update = cbk
-
     def __format__(self, format_spec):
         return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
 
     def initialized(self):
         return self.value is not None
 
+    def get(self):
+        return self.value
+
+    def register_mqtt_mgrs(self, f_publish, f_initialized):
+        if self.device_type is not None and (self.value_type == int or self.value_type == float):
+            ret = MQTTSensorMgr(
+                        name=self.ha_topic,
+                        human_name=self.human_name,
+                        device_class=self.device_type,
+                        unit=self.unit,
+                        publish=f_publish,
+                        get_value=self.get,
+                        get_available=f_initialized
+                        )
+            self.cbk_on_update = ret.publish_state
+            return [ret]
+        else:
+            return []
+
+
 class ChargerState:
 
     class Connector:
 
-        def __init__(self, connectorName, connector_name_human):
+        def __init__(self, connectorName, connector_human_name):
             self.connectorName = connectorName
-            self.connector_name_human = connector_name_human
+            self.connector_human_name = connector_human_name
 
             # loaded from the DeviceData message
-            self.miniCurrent = ChargerParam("minimal current", value_type=int, parse_message_type=DeviceData, parse_json_key="miniCurrent", ha_topic=f"{self.connectorName}.minimal_current")
-            self.maxCurrent = ChargerParam("maximal current", value_type=int, parse_message_type=DeviceData, parse_json_key="maxCurrent", ha_topic=f"{self.connectorName}.maximal_current")
-            self.connectorStatus = ChargerParam("connector status", value_type=int, parse_message_type=DeviceData, parse_json_key="connectorStatus", ha_topic=f"{self.connectorName}.connector_status")
-            self.lockStatus = ChargerParam("lock status", value_type=bool, parse_message_type=DeviceData, parse_json_key="lockStatus", ha_topic=f"{self.connectorName}.lock_status")
-            self.PncStatus = ChargerParam("Plug&Charge status", value_type=bool, parse_message_type=DeviceData, parse_json_key="PncStatus", ha_topic=f"{self.connectorName}.pnc_status")
+            self.miniCurrent = ChargerParam(
+                    f"{self.connector_human_name} Minimal Current",
+                    value_type=int,
+                    device_type="current",
+                    unit="A",
+                    parse_message_type=DeviceData,
+                    parse_json_key="miniCurrent",
+                    ha_topic=f"{self.connectorName}/minimal_current"
+                    )
+            self.maxCurrent = ChargerParam(
+                    f"{self.connector_human_name} Maximal Current",
+                    value_type=int,
+                    device_type="current",
+                    unit="A",
+                    parse_message_type=DeviceData,
+                    parse_json_key="maxCurrent",
+                    ha_topic=f"{self.connectorName}/maximal_current"
+                    )
+            self.connectorStatus = ChargerParam(
+                    f"{self.connector_human_name} Connector Status",
+                    value_type=int,
+                    parse_message_type=DeviceData,
+                    parse_json_key="connectorStatus",
+                    ha_topic=f"{self.connectorName}/connector_status"
+                    )
+            self.lockStatus = ChargerParam(
+                    f"{self.connector_human_name} Lock Status",
+                    value_type=bool,
+                    parse_message_type=DeviceData,
+                    parse_json_key="lockStatus",
+                    ha_topic=f"{self.connectorName}/lock_status"
+                    )
+            self.PncStatus = ChargerParam(
+                    f"{self.connector_human_name} Plug&Charge Status",
+                    value_type=bool,
+                    parse_message_type=DeviceData,
+                    parse_json_key="PncStatus",
+                    ha_topic=f"{self.connectorName}/pnc_status"
+                    )
 
             # loaded from the SynchroStatus message
-            self.connectionStatus = ChargerParam("connection status", value_type=bool, parse_message_type=SynchroStatus, parse_json_key="connectionStatus", ha_topic=f"{self.connectorName}.connection_status")
-            self.statusCode = ChargerParam("status code", value_type=int, parse_message_type=SynchroStatus, parse_json_key="statusCode", ha_topic=f"{self.connectorName}.status_code")
-            self.chargeStatus = ChargerParam("charge status", value_type=str, parse_message_type=SynchroStatus, parse_json_key="chargeStatus", ha_topic=f"{self.connectorName}.charge_status")
-            self.startTime = ChargerParam("charge start time", value_type=str, parse_message_type=SynchroStatus, parse_json_key="startTime", ha_topic=f"{self.connectorName}.charge_start_time")
-            self.endTime = ChargerParam("charge end time", value_type=str, parse_message_type=SynchroStatus, parse_json_key="endTime", ha_topic=f"{self.connectorName}.charge_end_time")
-            self.reserveCurrent = ChargerParam("charge reserved current", value_type=int, parse_message_type=SynchroStatus, parse_json_key="reserveCurrent", ha_topic=f"{self.connectorName}.charge_reserved_current", unit="A")
+            self.connectionStatus = ChargerParam(
+                    f"{self.connector_human_name} Connection Status",
+                    value_type=bool,
+                    parse_message_type=SynchroStatus,
+                    parse_json_key="connectionStatus",
+                    ha_topic=f"{self.connectorName}/connection_status"
+                    )
+            self.statusCode = ChargerParam(
+                    f"{self.connector_human_name} Status Code",
+                    value_type=int,
+                    parse_message_type=SynchroStatus,
+                    parse_json_key="statusCode",
+                    ha_topic=f"{self.connectorName}/status_code"
+                    )
+            self.chargeStatus = ChargerParam(
+                    f"{self.connector_human_name} Charging Status",
+                    value_type=str,
+                    parse_message_type=SynchroStatus,
+                    parse_json_key="chargeStatus",
+                    ha_topic=f"{self.connectorName}/charge_status"
+                    )
+            self.startTime = ChargerParam(
+                    f"{self.connector_human_name} Charging Start Time",
+                    value_type=str,
+                    parse_message_type=SynchroStatus,
+                    parse_json_key="startTime",
+                    ha_topic=f"{self.connectorName}/charge_start_time"
+                    )
+            self.endTime = ChargerParam(
+                    f"{self.connector_human_name} Charging End Time",
+                    value_type=str,
+                    parse_message_type=SynchroStatus,
+                    parse_json_key="endTime",
+                    ha_topic=f"{self.connectorName}/charge_end_time"
+                    )
+            self.reserveCurrent = ChargerParam(
+                    f"{self.connector_human_name} Reserved Current",
+                    value_type=int,
+                    device_type="current",
+                    unit="A",
+                    parse_message_type=SynchroStatus,
+                    parse_json_key="reserveCurrent",
+                    ha_topic=f"{self.connectorName}/charge_reserved_current",
+                    )
 
             # loaded from the SynchroData message
-            self.voltage = ChargerParam("charge voltage", value_type=float, parse_message_type=SynchroData, parse_json_key="voltage", ha_topic=f"{self.connectorName}.charge_voltage", unit="V")
-            self.current = ChargerParam("charge current", value_type=float, parse_message_type=SynchroData, parse_json_key="current", ha_topic=f"{self.connectorName}.charge_current", unit="A")
-            self.power = ChargerParam("charge power", value_type=float, parse_message_type=SynchroData, parse_json_key="power", ha_topic=f"{self.connectorName}.charge_power", unit="kW")
-            self.electricWork = ChargerParam("charge energy", value_type=float, parse_message_type=SynchroData, parse_json_key="electricWork", ha_topic=f"{self.connectorName}.charge_energy", unit="kWh")
-            self.chargingTime = ChargerParam("charge duration", value_type=str, parse_message_type=SynchroData, parse_json_key="chargingTime", ha_topic=f"{self.connectorName}.charge_duration")
+            self.voltage = ChargerParam(
+                    f"{self.connector_human_name} Voltage",
+                    value_type=float,
+                    device_type="voltage",
+                    unit="V",
+                    parse_message_type=SynchroData,
+                    parse_json_key="voltage",
+                    ha_topic=f"{self.connectorName}.charge_voltage"
+                    )
+            self.current = ChargerParam(
+                    f"{self.connector_human_name} Current",
+                    value_type=float,
+                    device_type="current",
+                    unit="A",
+                    parse_message_type=SynchroData,
+                    parse_json_key="current",
+                    ha_topic=f"{self.connectorName}.charge_current")
+            self.power = ChargerParam(
+                    f"{self.connector_human_name} Power",
+                    value_type=float,
+                    device_type="power",
+                    unit="kW",
+                    parse_message_type=SynchroData,
+                    parse_json_key="power",
+                    ha_topic=f"{self.connectorName}.charge_power"
+                    )
+            self.electricWork = ChargerParam(
+                    f"{self.connector_human_name} Charged Energy",
+                    value_type=float,
+                    device_type="energy",
+                    unit="kWh",
+                    parse_message_type=SynchroData,
+                    parse_json_key="electricWork",
+                    ha_topic=f"{self.connectorName}.charge_energy"
+                    )
+            self.chargingTime = ChargerParam(
+                    f"{self.connector_human_name} Charging Duration",
+                    value_type=str,
+                    parse_message_type=SynchroData,
+                    parse_json_key="chargingTime",
+                    ha_topic=f"{self.connectorName}.charge_duration"
+                    )
 
             self.params = [
                             self.miniCurrent,
@@ -104,6 +233,12 @@ class ChargerState:
         def is_charging(self):
             return self.chargeStatus.value == "charging" or self.chargeStatus.value == "wait"
 
+        def register_mqtt_mgrs(self, f_publish, f_initialized):
+            ret: list[MQTTSensorMgr] = []
+            for param in self.params:
+                ret += param.register_mqtt_mgrs(f_publish=f_publish, f_initialized=f_initialized)
+            return ret
+
     class MeterInfo:
 
         def __init__(self):
@@ -132,11 +267,17 @@ class ChargerState:
         def initialized(self):
             return all(x.initialized() for x in self.params)
 
+        def register_mqtt_mgrs(self, f_publish, f_initialized):
+            ret: list[MQTTSensorMgr] = []
+            for param in self.params:
+                ret += param.register_mqtt_mgrs(f_publish=f_publish, f_initialized=f_initialized)
+            return ret
+
     def __init__(self, chargeBoxSN):
         self.chargeBoxSN = chargeBoxSN
 
-        self.connectorMain = ChargerState.Connector("connectorMain", "Connector 1")
-        self.connectorVice = ChargerState.Connector("connectorVice", "Connector 2")
+        self.connectorMain = ChargerState.Connector("connectorMain", "C1")
+        self.connectorVice = ChargerState.Connector("connectorVice", "C2")
         self.connectors = [self.connectorMain, self.connectorVice]
 
         # loaded from the DeviceData message
@@ -214,3 +355,9 @@ class ChargerState:
             connectorId = 1
 
         return self.connectors[connectorId-1].current.value
+
+    def register_mqtt_mgrs(self, f_publish):
+        ret: list[MQTTSensorMgr] = []
+        for param in self.params:
+            ret += param.register_mqtt_mgrs(f_publish=f_publish, f_initialized=self.initialized)
+        return ret

@@ -49,49 +49,7 @@ class MQTTClient:
                         get_available=self.scharge_conn.charger_state.initialized)
                     )
 
-            self.topic_mgrs.append(
-                    MQTTSensorMgr(
-                        name="current_1",
-                        human_name="Current 1",
-                        device_class="current",
-                        unit="A",
-                        publish=self.publish,
-                        param_obj=self.scharge_conn.charger_state.connectorMain.current,
-                        get_available=self.scharge_conn.charger_state.initialized)
-                    )
-
-            self.topic_mgrs.append(
-                    MQTTSensorMgr(
-                        name="power_1",
-                        human_name="Power 1",
-                        device_class="power",
-                        unit="kW",
-                        publish=self.publish,
-                        param_obj=self.scharge_conn.charger_state.connectorMain.power,
-                        get_available=self.scharge_conn.charger_state.initialized)
-                    )
-
-            self.topic_mgrs.append(
-                    MQTTSensorMgr(
-                        name="current_2",
-                        human_name="Current 2",
-                        device_class="current",
-                        unit="A",
-                        publish=self.publish,
-                        param_obj=self.scharge_conn.charger_state.connectorVice.current,
-                        get_available=self.scharge_conn.charger_state.initialized)
-                    )
-
-            self.topic_mgrs.append(
-                    MQTTSensorMgr(
-                        name="power_2",
-                        human_name="Power 2",
-                        device_class="power",
-                        unit="kW",
-                        publish=self.publish,
-                        param_obj=self.scharge_conn.charger_state.connectorVice.power,
-                        get_available=self.scharge_conn.charger_state.initialized)
-                    )
+            self.topic_mgrs += self.scharge_conn.charger_state.register_mqtt_mgrs(self.publish)
 
             msg = self.generate_discovery_payload(self.scharge_conn)
             self.logger.info(f"Publishing discovery message to {discovery_topic}.")
@@ -117,12 +75,6 @@ class MQTTClient:
             for mgr in self.topic_mgrs:
                 await self.publish(mgr.availability_topic, mgr.get_availability_msg())
             await asyncio.sleep(3)
-
-    # async def state_loop(self, client: aiomqtt.Client):
-    #     while True:
-    #         for mgr in self.topic_mgrs:
-    #             await self.publish(client, mgr.state_topic, mgr.get_state_msg())
-    #         await asyncio.sleep(1)
 
     async def process_switch_charging(self, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
         connectorId = 1

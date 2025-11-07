@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from typing import Callable
-from charger_state import ChargerParam
 
 class MQTTSwitchMgr:
     def __init__(self, name: str, human_name: str, process_msg: Callable, get_state: Callable, get_available: Callable):
@@ -102,26 +101,24 @@ class MQTTNumberMgr:
                )
 
 class MQTTSensorMgr:
-    def __init__(self, name: str, human_name: str, device_class: str, unit: str, publish: Callable, param_obj: ChargerParam, get_available: Callable):
+    def __init__(self, name: str, human_name: str, device_class: str, unit: str, publish: Callable, get_value: Callable, get_available: Callable):
         self.name = name
         self.human_name = human_name
         self.device_class = device_class
         self.unit = unit
         self.publish = publish
-        self.param_obj = param_obj
+        self.get_value = get_value
         self.get_available = get_available
 
         self.state_topic = f"scharge/{self.name}/state"
         self.command_topic = None
         self.availability_topic = f"scharge/{self.name}/available"
 
-        param_obj.register_update_cbk(self.publish_state)
-
     async def publish_state(self, new_state):
         await self.publish(self.state_topic, new_state)
 
     def get_state_msg(self):
-        return self.param_obj.value
+        return self.get_value()
 
     def get_availability_msg(self):
         if self.get_available():
