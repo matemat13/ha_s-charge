@@ -13,18 +13,20 @@ class ChargerParam:
         self.transform = transform
         self.value = None
         self.value_type = value_type
-        self.cbk_on_change = None
+        self.cbk_on_update = None
 
-    def update(self, message, payload_data = None):
+    async def update(self, message, payload_data = None):
         if type(message) == self.parse_message_type:
-            new_value = None
             if payload_data is None:
-                new_value = self.transform(self.value_type(message.payload_data[self.parse_json_key]))
+                self.value = self.transform(self.value_type(message.payload_data[self.parse_json_key]))
             else:
-                new_value = self.transform(self.value_type(payload_data[self.parse_json_key]))
-            if new_value != self.value and self.cbk_on_change:
-                self.cbk_on_change(new_value)
-            self.value = new_value
+                self.value = self.transform(self.value_type(payload_data[self.parse_json_key]))
+
+            if self.cbk_on_update is not None:
+                await self.cbk_on_update(self.value)
+
+    def register_update_cbk(self, cbk):
+        self.cbk_on_update = cbk
 
     def __format__(self, format_spec):
         return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
@@ -36,8 +38,9 @@ class ChargerState:
 
     class Connector:
 
-        def __init__(self, connectorName):
+        def __init__(self, connectorName, connector_name_human):
             self.connectorName = connectorName
+            self.connector_name_human = connector_name_human
 
             # loaded from the DeviceData message
             self.miniCurrent = ChargerParam("minimal current", value_type=int, parse_message_type=DeviceData, parse_json_key="miniCurrent", ha_topic=f"{self.connectorName}.minimal_current")
@@ -86,14 +89,17 @@ class ChargerState:
                 ret += f"{param:{format_spec}}\n"
             return ret
 
-        def update(self, message):
+        async def update(self, message):
             if type(message) == DeviceData or type(message) == SynchroStatus or type(message) == SynchroData:
                 connector_data = message.payload_data[self.connectorName]
                 for param in self.params:
-                    param.update(message, connector_data)
+                    await param.update(message, connector_data)
 
         def initialized(self):
             return all(x.initialized() for x in self.params)
+
+        def is_connected(self):
+            return self.connectionStatus.value
 
         def is_charging(self):
             return self.chargeStatus.value == "charging" or self.chargeStatus.value == "wait"
@@ -117,11 +123,11 @@ class ChargerState:
                 ret += f"{param:{format_spec}}\n"
             return ret
 
-        def update(self, message):
+        async def update(self, message):
             if type(message) == SynchroData:
                 meterInfo_data = message.payload_data["meterInfo"]
                 for param in self.params:
-                    param.update(message, meterInfo_data)
+                    await param.update(message, meterInfo_data)
 
         def initialized(self):
             return all(x.initialized() for x in self.params)
@@ -129,8 +135,8 @@ class ChargerState:
     def __init__(self, chargeBoxSN):
         self.chargeBoxSN = chargeBoxSN
 
-        self.connectorMain = ChargerState.Connector("connectorMain")
-        self.connectorVice = ChargerState.Connector("connectorVice")
+        self.connectorMain = ChargerState.Connector("connectorMain", "Connector 1")
+        self.connectorVice = ChargerState.Connector("connectorVice", "Connector 2")
         self.connectors = [self.connectorMain, self.connectorVice]
 
         # loaded from the DeviceData message
@@ -183,13 +189,13 @@ class ChargerState:
             ret += f"{param:<31}\n"
         return ret
 
-    def update(self, message):
+    async def update(self, message):
         # ignore data for other chargers
         if self.chargeBoxSN != message.payload_data["chargeBoxSN"]:
             return
 
         for param in self.params:
-            param.update(message)
+            await param.update(message)
 
     def initialized(self):
         return all(x.initialized() for x in self.params)

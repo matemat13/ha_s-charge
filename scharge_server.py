@@ -34,8 +34,8 @@ class SChargeConn:
         self.broadcast_port = 3050
 
         self.udp_handshake_timeout_s = 1.9
-        self.confirmation_timout_s = 5.0
-        self.handshake_period_s = 7.0
+        self.confirmation_timeout_s = 5.0
+        self.handshake_period_s = 3.0
         self.request_data_period_s = 0.3
 
         self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -44,7 +44,7 @@ class SChargeConn:
 
         self.loop_tasks = set()
 
-    async def send_authorize_msg(self, current, purpose, connectorId):
+    async def send_authorize_msg(self, current: int, purpose: str, connectorId: int):
         if self.websocket is None:
             return False, "not connected"
 
@@ -71,7 +71,7 @@ class SChargeConn:
         await self.send_message(self.websocket, message)
 
         try:
-            await asyncio.wait_for(confirmation, timeout=self.confirmation_timout_s)
+            await asyncio.wait_for(confirmation, timeout=self.confirmation_timeout_s)
             self.future_confirmations.remove(confirmation)
             return confirmation.result(), "response received"
 
@@ -179,7 +179,7 @@ class SChargeConn:
 
                 msg_parsed = parse_json(msg_json)
                 if msg_parsed is not None:
-                    self.charger_state.update(msg_parsed)
+                    await self.charger_state.update(msg_parsed)
                     # print(f"{self.charger_state}")
 
     async def server_loop(self):
@@ -249,7 +249,6 @@ class SChargeConn:
         # TODO: fix
         while not self.charger_state.initialized():
             await asyncio.sleep(1)
-        await self.charger_state_initialized_fut
         await asyncio.sleep(1.0)
         self.logger.info("Detected charger state initialized, starting charging!")
 

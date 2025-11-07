@@ -3,108 +3,9 @@
 import asyncio
 import aiomqtt
 import json
-from typing import Callable
 
 from scharge_server import *
-from charger_state import ChargerParam
-
-class MQTTSwitchMgr:
-    def __init__(self, name: str, human_name: str, process_msg: Callable, get_state: Callable, get_available: Callable):
-        self.name = name
-        self.human_name = human_name
-        self.process_msg = process_msg
-        self.get_state = get_state
-        self.get_available = get_available
-
-        self.state_topic = f"scharge/{self.name}/state"
-        self.command_topic = f"scharge/{self.name}/set"
-        self.availability_topic = f"scharge/{self.name}/available"
-
-    # def encode_raw(self, raw_json):
-    #     return json.dumps(raw_json, separators=(',', ':'))
-
-    def get_state_msg(self):
-        if self.get_state():
-            return "ON"
-        else:
-            return "OFF"
-
-    def get_availability_msg(self):
-        if self.get_available():
-            return "online"
-        else:
-            return "offline"
-
-    def get_description(self):
-        return (
-                f"scharge_{self.name}",
-                {
-                    "p": "switch",
-                    "name": f"{self.human_name}",
-                    "unique_id": f"scharge_{self.name}",
-                    "device_class": "switch",
-                    "state_topic": self.state_topic,
-                    "state_on": "ON",
-                    "state_off": "OFF",
-                    "command_topic": self.command_topic,
-                    "payload_on": "ON",
-                    "payload_off": "OFF",
-                    "availability_topic": self.availability_topic,
-                    "payload_available": "online",
-                    "payload_not_available": "offline",
-                    "availability_mode": "latest",
-                    "optimistic": True,
-                    "qos": 0,
-                    "retain": True,
-                }
-               )
-
-class MQTTSensorMgr:
-    def __init__(self, name: str, human_name: str, publish: Callable, registered_param: ChargerParam, get_available: Callable):
-        self.name = name
-        self.human_name = human_name
-        self.publish = publish
-        self.registered_param = registered_param
-        self.get_available = get_available
-
-        self.state_topic = f"scharge/{self.name}/state"
-        self.command_topic = None
-        self.availability_topic = f"scharge/{self.name}/available"
-
-        registered_param.cbk_on_change = self.publish_state
-
-    async def publish_state(self, new_state):
-        await self.publish(self.state_topic, new_state)
-
-    def get_state_msg(self):
-        return self.registered_param.value
-
-    def get_availability_msg(self):
-        if self.get_available():
-            return "online"
-        else:
-            return "offline"
-
-    def get_description(self):
-        return (
-                f"scharge_{self.name}",
-                {
-                    "p": "sensor",
-                    "name": f"{self.human_name}",
-                    "unique_id": f"scharge_{self.name}",
-                    "device_class": "current",
-                    "state_class": "measurement",
-                    "unit_of_measurement": "A",
-                    "state_topic": self.state_topic,
-                    "availability_topic": self.availability_topic,
-                    "payload_available": "online",
-                    "payload_not_available": "offline",
-                    "availability_mode": "latest",
-                    "expire_after": 5,
-                    "qos": 0,
-                    "retain": True,
-                }
-               )
+from mqtt_managers import *
 
 class MQTTClient:
     def __init__(self, hostname: str, port: str, username: str, password: str, scharge_conn: SChargeConn, logger: logging.Logger):
@@ -115,6 +16,8 @@ class MQTTClient:
         self.scharge_conn = scharge_conn
         self.logger = logger
         self.topic_mgrs = list()
+
+        self.desired_current = 0
 
     async def main(self):
         self.logger.info(f"Starting MQTT client with hostname {self.hostname}:{self.port}, user: {self.username}, password: {self.password}.")
@@ -135,11 +38,58 @@ class MQTTClient:
                     )
 
             self.topic_mgrs.append(
+                    MQTTNumberMgr(
+                        name="set_current",
+                        human_name="Set Current",
+                        minimum=self.scharge_conn.charger_state.connectorMain.miniCurrent.value,
+                        maximum=self.scharge_conn.charger_state.connectorMain.maxCurrent.value,
+                        step=1,
+                        process_msg=self.process_set_current,
+                        get_state=self.scharge_conn.charger_state.is_charging,
+                        get_available=self.scharge_conn.charger_state.initialized)
+                    )
+
+            self.topic_mgrs.append(
                     MQTTSensorMgr(
-                        name="current",
+                        name="current_1",
                         human_name="Current 1",
+                        device_class="current",
+                        unit="A",
                         publish=self.publish,
-                        registered_param=self.scharge_conn.charger_state.connectorMain.current,
+                        param_obj=self.scharge_conn.charger_state.connectorMain.current,
+                        get_available=self.scharge_conn.charger_state.initialized)
+                    )
+
+            self.topic_mgrs.append(
+                    MQTTSensorMgr(
+                        name="power_1",
+                        human_name="Power 1",
+                        device_class="power",
+                        unit="kW",
+                        publish=self.publish,
+                        param_obj=self.scharge_conn.charger_state.connectorMain.power,
+                        get_available=self.scharge_conn.charger_state.initialized)
+                    )
+
+            self.topic_mgrs.append(
+                    MQTTSensorMgr(
+                        name="current_2",
+                        human_name="Current 2",
+                        device_class="current",
+                        unit="A",
+                        publish=self.publish,
+                        param_obj=self.scharge_conn.charger_state.connectorVice.current,
+                        get_available=self.scharge_conn.charger_state.initialized)
+                    )
+
+            self.topic_mgrs.append(
+                    MQTTSensorMgr(
+                        name="power_2",
+                        human_name="Power 2",
+                        device_class="power",
+                        unit="kW",
+                        publish=self.publish,
+                        param_obj=self.scharge_conn.charger_state.connectorVice.power,
                         get_available=self.scharge_conn.charger_state.initialized)
                     )
 
@@ -152,7 +102,7 @@ class MQTTClient:
                     await client.subscribe(mgr.command_topic)
                 await self.publish(mgr.availability_topic, mgr.get_availability_msg())
                 await self.publish(mgr.state_topic, mgr.get_state_msg())
-            # asyncio.create_task(self.availability_loop(client))
+            asyncio.create_task(self.availability_loop())
             # asyncio.create_task(self.state_loop(client))
 
             await client.subscribe("homeassistant/status")
@@ -160,13 +110,13 @@ class MQTTClient:
                 self.logger.debug(f"{message.topic} << {message.payload}")
                 for mgr in self.topic_mgrs:
                     if mgr.command_topic == str(message.topic):
-                        await mgr.process_msg(client, mgr, message)
+                        await mgr.process_msg(mgr, message)
 
-    # async def availability_loop(self, client: aiomqtt.Client):
-    #     while True:
-    #         for mgr in self.topic_mgrs:
-    #             await self.publish(client, mgr.availability_topic, mgr.get_availability_msg())
-    #         await asyncio.sleep(3)
+    async def availability_loop(self):
+        while True:
+            for mgr in self.topic_mgrs:
+                await self.publish(mgr.availability_topic, mgr.get_availability_msg())
+            await asyncio.sleep(3)
 
     # async def state_loop(self, client: aiomqtt.Client):
     #     while True:
@@ -174,12 +124,14 @@ class MQTTClient:
     #             await self.publish(client, mgr.state_topic, mgr.get_state_msg())
     #         await asyncio.sleep(1)
 
-    async def process_switch_charging(self, client: aiomqtt.Client, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
-        connectorId = 2
+    async def process_switch_charging(self, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
+        connectorId = 1
+        if not self.scharge_conn.charger_state.connectorMain.is_connected() and self.scharge_conn.charger_state.connectorVice.is_connected():
+            connectorId = 2
+
         if msg.payload == b"ON":
-            desired_current = 6
-            self.logger.info(f"Starting charging from MQTT on connector {connectorId} with current {desired_current}A!")
-            success = await self.scharge_conn.start_charging(desired_current, connectorId)
+            self.logger.info(f"Starting charging from MQTT on connector {connectorId} with current {self.desired_current}A!")
+            success = await self.scharge_conn.start_charging(self.desired_current, connectorId)
             if success:
                 self.logger.info(f"Started charging!")
             else:
@@ -191,6 +143,11 @@ class MQTTClient:
                 self.logger.info(f"Stopped charging!")
             else:
                 self.logger.error(f"Failed to stop charging!")
+        await self.publish(mgr.state_topic, mgr.get_state_msg())
+
+    async def process_set_current(self, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
+        self.desired_current = int(msg.payload)
+        self.logger.info(f"Changed desired charging current to {self.desired_current}A.")
         await self.publish(mgr.state_topic, mgr.get_state_msg())
 
     async def publish(self, topic: str, message: str):
