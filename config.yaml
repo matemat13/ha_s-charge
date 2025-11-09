@@ -9,5 +9,25 @@ arch:
     - armhf
     - armv7
     - i386
-startup: services
+startup: "application"
 host_network: true
+
+host_dbus: true
+apparmor: true
+
+homeassistant_api: true
+hassio_api: true 
+
+services:
+  - mqtt:need
+
+discovery:
+  - mqtt
+
+options:
+  charger_serial_number: null
+  websocket_receive_port: "auto"
+
+schema:
+  charger_serial_number: "str"
+  websocket_receive_port: "str?"
