@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-import json
 from copy import deepcopy
-from collections.abc import Iterable
 
 class PayloadMsg:
     action = ""

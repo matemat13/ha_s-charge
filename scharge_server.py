@@ -6,7 +6,7 @@ import ipaddress
 import logging
 
 import asyncio
-from websockets import serve
+import websockets
 import json
 
 from messages import *
@@ -16,6 +16,7 @@ from charger_state import ChargerState
 class SChargeConn:
 
     def __init__(self, charge_box_serial, rcv_ip, logger):
+        self.shutdown = False
         self.websocket = None
         self.future_confirmations = list()
         self.logger = logger
@@ -27,6 +28,7 @@ class SChargeConn:
         self.charger_state = ChargerState(self.charge_box_serial)
 
         self.rcv_ip = rcv_ip
+        self.rcv_port = None
 
         # get the 24 subnet corresponding to the specified ip address
         ip_network = ipaddress.ip_network(rcv_ip).supernet(new_prefix=24)
@@ -37,10 +39,6 @@ class SChargeConn:
         self.confirmation_timeout_s = 5.0
         self.handshake_period_s = 3.0
         self.request_data_period_s = 0.3
-
-        self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.send_sock.bind(('0.0.0.0', 3050))  # bind local port 3050
-        self.send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
         self.loop_tasks = set()
 
@@ -82,7 +80,7 @@ class SChargeConn:
 
     async def start_charging(self, current: int, connectorId: int, current_tolerance = 1.0) -> bool:
         connector_idx = connectorId-1
-        max_retries = 5
+        max_retries = 10
 
         retries = 0
         while self.charger_state.connectors[connector_idx].current.value is None:
@@ -151,57 +149,73 @@ class SChargeConn:
 
     async def process_websocket(self, websocket):
         """Handles messages from the connected charger."""
-        if self.websocket is None:
-            self.websocket = websocket
-            self.connected_ws_fut.set_result(websocket)
-            remote_ip, remote_port = websocket.remote_address
-            self.logger.info(f"Connection established with {remote_ip}:{remote_port}!")
+        try:
+            if self.websocket is None:
+                self.websocket = websocket
+                self.connected_ws_evt.set()
+                remote_ip, remote_port = websocket.remote_address
+                self.logger.info(f"Connection established with {remote_ip}:{remote_port}!")
 
-        async for message in websocket:
-            self.logger.debug(f"<< {message}")
-            msg_json = json.loads(message)
+            async for message in websocket:
+                self.logger.debug(f"<< {message}")
+                msg_json = json.loads(message)
 
-            msg_serial = msg_json["payload"]["chargeBoxSN"]
-            if msg_serial != self.charge_box_serial:
-                self.logger.info("Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
-                continue
+                msg_serial = msg_json["payload"]["chargeBoxSN"]
+                if msg_serial != self.charge_box_serial:
+                    self.logger.info("Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
+                    continue
 
-            # If it's an Ack message check if we're not expecting confirmation for a message
-            if msg_json["messageTypeId"] == Ack.messageTypeId:
-                for future_confirmation in self.future_confirmations:
-                    if future_confirmation.uniqueId == int(msg_json["uniqueId"]):
-                        future_confirmation.set_result(msg_json["payload"]["result"])
+                # If it's an Ack message check if we're not expecting confirmation for a message
+                if msg_json["messageTypeId"] == Ack.messageTypeId:
+                    for future_confirmation in self.future_confirmations:
+                        if future_confirmation.uniqueId == int(msg_json["uniqueId"]):
+                            future_confirmation.set_result(msg_json["payload"]["result"])
 
-            # Otherwise it's a payload message, sned an ack for it and then process it
-            else:
-                # print("Got message, sending ack")
-                asyncio.create_task(self.send_ack(websocket, msg_json["uniqueId"]))
+                # Otherwise it's a payload message, sned an ack for it and then process it
+                else:
+                    # print("Got message, sending ack")
+                    asyncio.create_task(self.send_ack(websocket, msg_json["uniqueId"]))
 
-                msg_parsed = parse_json(msg_json)
-                if msg_parsed is not None:
-                    await self.charger_state.update(msg_parsed)
-                    # print(f"{self.charger_state}")
+                    msg_parsed = parse_json(msg_json)
+                    if msg_parsed is not None:
+                        await self.charger_state.update(msg_parsed)
+                        # print(f"{self.charger_state}")
+        except (websockets.exceptions.ConnectionClosedError, ConnectionResetError) as e:
+            self.logger.info(f"Websocket server disconnected: {e}")
+            self.disconnected_evt.set()
 
     async def server_loop(self):
+        self.disconnected_evt = asyncio.Event()
         """Starts the WebSocket server."""
-        async with serve(self.process_websocket, self.rcv_ip) as server:
-            socket = server.sockets[0]
-            rcv_port = (socket.getsockname()[1])
-            self.rcv_port_fut.set_result(rcv_port)
-            self.logger.info(f"Started WebSocket server on {self.rcv_ip}:{rcv_port}")
-
+        async with websockets.serve(self.process_websocket, self.rcv_ip, ping_timeout=float("inf")) as server:
             try:
-                await asyncio.Future()  # run until cancelled
+                socket = server.sockets[0]
+                self.rcv_port = (socket.getsockname()[1])
+                self.rcv_port_evt.set()
+                self.logger.info(f"Started WebSocket server on {self.rcv_ip}:{self.rcv_port}")
+
+                self.logger.info("Waiting if server disconnects")
+                await self.disconnected_evt.wait()
+                server.close()
+                await server.wait_closed()
 
             except asyncio.CancelledError:
                 self.logger.info("Server loop cancelled. Closing WebSocket server.")
+                self.shutdown = True
                 server.close()
                 await server.wait_closed()
                 raise
 
+            finally:
+                self.websocket = None
+
     async def udp_handshake_loop(self, ip_address, port):
         """Broadcasts UDP handshake messages until connected."""
         self.logger.debug(f"Sending UDP broadcast handshake to {self.broadcast_ip}:{self.broadcast_port}.")
+
+        send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        send_sock.bind(('0.0.0.0', 3050))  # bind local port 3050
+        send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
         try:
             while self.websocket is None:
@@ -215,16 +229,14 @@ class SChargeConn:
 
                 message = msg.encode().encode("ASCII")
                 self.logger.debug(f">>UDP {message}")
-                self.send_sock.sendto(message, (self.broadcast_ip, self.broadcast_port))
+                send_sock.sendto(message, (self.broadcast_ip, self.broadcast_port))
 
                 await asyncio.sleep(self.udp_handshake_timeout_s)
 
         except asyncio.CancelledError:
             self.logger.info("UDP handshake loop cancelled.")
+            send_sock.close()
             raise
-
-        finally:
-            self.send_sock.close()
 
     async def handshake_loop(self, websocket):
         """Periodically sends WebSocket handshake to keep the connection alive."""
@@ -270,26 +282,33 @@ class SChargeConn:
         self.logger.info("Stopped charging!")
 
     async def main(self):
-        """Starts all tasks in the correct sequence."""
-        self.rcv_port_fut = asyncio.Future()
-        self.loop_tasks.add(asyncio.create_task(self.server_loop()))
+        while not self.shutdown:
+            """Starts all tasks in the correct sequence."""
+            self.rcv_port_evt = asyncio.Event()
+            self.server_disconnected_evt = asyncio.Event()
+            self.server_loop_task = asyncio.create_task(self.server_loop())
+            self.loop_tasks.add(self.server_loop_task)
 
-        self.logger.info("Waiting for WebSocket server initialization.")
-        await self.rcv_port_fut
+            self.logger.info("Waiting for WebSocket server initialization.")
+            await self.rcv_port_evt.wait()
 
-        self.connected_ws_fut = asyncio.Future()
-        rcv_port = self.rcv_port_fut.result()
-        self.loop_tasks.add(asyncio.create_task(self.udp_handshake_loop(self.rcv_ip, rcv_port)))
+            self.connected_ws_evt = asyncio.Event()
+            self.loop_tasks.add(asyncio.create_task(self.udp_handshake_loop(self.rcv_ip, self.rcv_port)))
 
-        self.logger.info("Waiting for charger to connect to WebSocket.")
-        await self.connected_ws_fut
+            self.logger.info("Waiting for charger to connect to WebSocket.")
+            await self.connected_ws_evt.wait()
 
-        websocket = self.connected_ws_fut.result()
-        self.loop_tasks.add(asyncio.create_task(self.handshake_loop(websocket)))
+            self.handshake_loop_task = asyncio.create_task(self.handshake_loop(self.websocket))
+            self.loop_tasks.add(self.handshake_loop_task)
 
         # self.loop_tasks.add(asyncio.create_task(self.keyboard_loop()))
 
-        await asyncio.Future()
+            await self.server_loop_task
+            if self.shutdown:
+                return
+
+            for task in self.loop_tasks:
+                task.cancel()
 
 
 if __name__ == "__main__":
