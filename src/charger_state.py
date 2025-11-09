@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from messages_rx import *
 from typing import Type, Callable
-from enum import Enum, StrEnum
+from enum import StrEnum
 
 from mqtt_managers import *
 
@@ -9,7 +9,7 @@ from mqtt_managers import *
 class ChargeStatusEnum(StrEnum):
     WAIT = "wait"
     CHARGING = "charging"
-    FINISHED = "finished"
+    FINISH = "finish"
     IDLE = "idle"
 
 
