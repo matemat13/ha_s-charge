@@ -3,9 +3,27 @@
 import asyncio
 import aiomqtt
 import json
+import ipaddress
 
 from scharge_server import *
 from mqtt_managers import *
+
+
+# from https://stackoverflow.com/questions/166506/finding-local-ip-addresses-using-pythons-stdlib/
+import socket
+def get_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(0)
+    try:
+        # doesn't even have to be reachable
+        s.connect(('10.254.254.254', 1))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
 
 class MQTTClient:
     def __init__(self, hostname: str, port: str, username: str, password: str, scharge_conn: SChargeConn, logger: logging.Logger):
@@ -145,9 +163,9 @@ class MQTTClient:
 
 if __name__ == "__main__":
     if len(sys.argv) < 5:
-        print("Please specify the charger serial number, this computer's IP address, and the MQTT server address (user@address:port) and password!")
+        print("Please specify the charger serial number, this computer's IP address, the websocket receive port, and the MQTT server address (user@address:port) and password!")
         print("example:")
-        print("python3 mqtt_client XXXXYYYYZZZZ 192.168.0.1 mqtt_user@homeassistant.local:1883 mqtt_password")
+        print("python3 mqtt_client XXXXYYYYZZZZ 192.168.0.1 auto mqtt_user@homeassistant.local:1883 mqtt_password")
         exit(1)
 
     scharge_logger = logging.getLogger("SCharge_server")
@@ -166,7 +184,18 @@ if __name__ == "__main__":
 
     charge_box_serial = sys.argv[1]
     rcv_ip = sys.argv[2]
-    scharge_conn = SChargeConn(charge_box_serial, rcv_ip, scharge_logger)
+    if rcv_ip == "auto":
+        scharge_logger.info("Using automatic IP address deduction.")
+        rcv_ip = get_ip()
+    else:
+        try:
+            ipaddress.ip_address(rcv_ip)
+        except ValueError as e:
+            rcv_ip = socket.gethostbyname(rcv_ip)
+    rcv_port = sys.argv[3]
+    if rcv_port == "auto":
+        rcv_port = None
+    scharge_conn = SChargeConn(charge_box_serial, rcv_ip=rcv_ip, rcv_port=rcv_port, logger=scharge_logger)
 
     mqtt_logger = logging.getLogger("SCharge_mqtt")
     mqtt_logger.setLevel(logging.DEBUG)
@@ -182,8 +211,8 @@ if __name__ == "__main__":
     sh.setFormatter(formatter)
     mqtt_logger.addHandler(sh)
 
-    mqtt_server_address = sys.argv[3]
-    mqtt_password = sys.argv[4]
+    mqtt_server_address = sys.argv[4]
+    mqtt_password = sys.argv[5]
     mqtt_user = mqtt_server_address.split("@")[0]
     mqtt_hostname = mqtt_server_address.split("@")[1].split(":")[0]
     mqtt_port = mqtt_server_address.split("@")[1].split(":")[1]

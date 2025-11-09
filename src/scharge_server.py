@@ -15,7 +15,7 @@ from charger_state import ChargerState
 
 class SChargeConn:
 
-    def __init__(self, charge_box_serial, rcv_ip, logger):
+    def __init__(self, charge_box_serial, rcv_ip, rcv_port, logger):
         self.shutdown = False
         self.websocket = None
         self.future_confirmations = list()
@@ -28,7 +28,7 @@ class SChargeConn:
         self.charger_state = ChargerState(self.charge_box_serial)
 
         self.rcv_ip = rcv_ip
-        self.rcv_port = None
+        self.rcv_port = rcv_port
 
         # get the 24 subnet corresponding to the specified ip address
         ip_network = ipaddress.ip_network(rcv_ip).supernet(new_prefix=24)
@@ -186,8 +186,9 @@ class SChargeConn:
 
     async def server_loop(self):
         self.disconnected_evt = asyncio.Event()
+        self.logger.info(f"Starting WebSocket server on {self.rcv_ip}:{self.rcv_port}")
         """Starts the WebSocket server."""
-        async with websockets.serve(self.process_websocket, self.rcv_ip, ping_timeout=float("inf")) as server:
+        async with websockets.serve(self.process_websocket, host=self.rcv_ip, port=self.rcv_port, ping_timeout=float("inf")) as server:
             try:
                 socket = server.sockets[0]
                 self.rcv_port = (socket.getsockname()[1])
@@ -211,7 +212,7 @@ class SChargeConn:
 
     async def udp_handshake_loop(self, ip_address, port):
         """Broadcasts UDP handshake messages until connected."""
-        self.logger.debug(f"Sending UDP broadcast handshake to {self.broadcast_ip}:{self.broadcast_port}.")
+        self.logger.info(f"Sending UDP broadcast handshake to {self.broadcast_ip}:{self.broadcast_port}.")
 
         send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         send_sock.bind(('0.0.0.0', 3050))  # bind local port 3050

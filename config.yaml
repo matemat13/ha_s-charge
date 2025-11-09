@@ -1,0 +1,13 @@
+name: "S-Charge to MQTT"
+description: "Connects to an S-Charge compatible EV charger over websocket and publishes the data to Home Assistant over MQTT"
+version: "1.0.0"
+slug: "scharge"
+init: false
+arch:
+    - aarch64
+    - amd64
+    - armhf
+    - armv7
+    - i386
+startup: services
+host_network: true
