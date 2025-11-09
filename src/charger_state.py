@@ -14,7 +14,7 @@ class ChargeStatusEnum(StrEnum):
 
 
 class ChargerParam:
-    def __init__(self, human_name : str, value_type: Type, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", device_class: str = "", transform : Callable = lambda x : x):
+    def __init__(self, human_name : str, value_type: Type, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", device_class: str = "", state_class: str = "measurement", is_sensor: bool = True, transform : Callable = lambda x : x):
         self.human_name = human_name
         self.human_name_colon = self.human_name + ":"
         self.parse_message_type = parse_message_type
@@ -25,6 +25,8 @@ class ChargerParam:
         self.value = None
         self.value_type = value_type
         self.device_class = device_class
+        self.state_class = state_class
+        self.is_sensor = is_sensor
         self.cbk_on_update = None
 
     async def update(self, message, payload_data = None):
@@ -35,7 +37,7 @@ class ChargerParam:
                 self.value = self.transform(self.value_type(payload_data[self.parse_json_key]))
 
             if self.cbk_on_update is not None:
-                await self.cbk_on_update(self.value)
+                await self.cbk_on_update()
 
     def __format__(self, format_spec):
         return f"{self.human_name_colon:{format_spec}}{self.value}{self.unit}"
@@ -49,15 +51,27 @@ class ChargerParam:
     def register_mqtt_mgrs(self, f_publish, f_initialized):
         if self.device_class != "":
             if self.value_type == int or self.value_type == float:
-                ret = MQTTSensorMgr(
-                            name=self.ha_topic,
-                            human_name=self.human_name,
-                            device_class=self.device_class,
-                            unit=self.unit,
-                            publish=f_publish,
-                            get_state=self.get,
-                            get_available=f_initialized
-                            )
+                if self.is_sensor:
+                    ret = MQTTSensorMgr(
+                                name=self.ha_topic,
+                                human_name=self.human_name,
+                                device_class=self.device_class,
+                                state_class=self.state_class,
+                                unit=self.unit,
+                                publish=f_publish,
+                                get_state=self.get,
+                                get_available=f_initialized
+                                )
+                else:
+                    ret = MQTTNumberDiagMgr(
+                                name=self.ha_topic,
+                                human_name=self.human_name,
+                                device_class=self.device_class,
+                                unit=self.unit,
+                                publish=f_publish,
+                                get_state=self.get,
+                                get_available=f_initialized
+                                )
                 self.cbk_on_update = ret.publish_state
                 return [ret]
             elif self.value_type == bool:
@@ -108,6 +122,7 @@ class ChargerState:
                     unit="A",
                     parse_message_type=DeviceData,
                     parse_json_key="miniCurrent",
+                    is_sensor=False,
                     ha_topic=f"{self.connectorName}/minimal_current"
                     )
             self.maxCurrent = ChargerParam(
@@ -117,6 +132,7 @@ class ChargerState:
                     unit="A",
                     parse_message_type=DeviceData,
                     parse_json_key="maxCurrent",
+                    is_sensor=False,
                     ha_topic=f"{self.connectorName}/maximal_current"
                     )
             self.connectorStatus = ChargerParam(
@@ -223,6 +239,7 @@ class ChargerState:
                     f"{self.connector_human_name} Charged Energy",
                     value_type=float,
                     device_class="energy",
+                    state_class="total_increasing",
                     unit="kWh",
                     parse_message_type=SynchroData,
                     parse_json_key="electricWork",
@@ -352,22 +369,33 @@ class ChargerState:
                 "number of charges",
                 value_type=int,
                 device_class="none",
+                state_class="total_increasing",
                 parse_message_type=DeviceData,
                 parse_json_key="chargeTimes",
                 ha_topic="number_of_charges"
                 )
         self.cumulativeTime = ChargerParam("cumulative charge duration", value_type=int, parse_message_type=DeviceData, parse_json_key="cumulativeTime", ha_topic="cumulative_charge_duration", unit="h", transform=lambda x : x / (1e3 * 60 * 60))
         self.totalPower = ChargerParam(
-                "Total Energy Charged",
+                "Total Energy Charged (raw)",
                 value_type=int,
                 device_class="energy",
+                state_class="total_increasing",
                 unit="kWh",
                 parse_message_type=DeviceData,
                 parse_json_key="totalPower",
                 ha_topic="total_power",
                 transform=lambda x : x / 100.0
                 )
-        self.rssi = ChargerParam("connection RSSI", value_type=int, parse_message_type=DeviceData, parse_json_key="rssi", ha_topic="connection_rssi", unit="dB")
+        self.rssi = ChargerParam(
+                "connection RSSI",
+                value_type=int,
+                device_class="signal_strength",
+                unit="dB",
+                parse_message_type=DeviceData,
+                parse_json_key="rssi",
+                is_sensor=False,
+                ha_topic="connection_rssi",
+                )
         self.evseType = ChargerParam("EVSE type", value_type=str, parse_message_type=DeviceData, parse_json_key="evseType", ha_topic="evse_type")
         self.evsePhase = ChargerParam("EVSE number of phases", value_type=str, parse_message_type=DeviceData, parse_json_key="evsePhase", ha_topic="evse_number_of_phases")
         self.loadbalance = ChargerParam("load balancing", value_type=int, parse_message_type=DeviceData, parse_json_key="loadbalance", ha_topic="load_balancing")

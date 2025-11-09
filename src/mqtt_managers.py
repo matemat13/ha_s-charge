@@ -115,6 +115,103 @@ class MQTTNumberMgr(MQTTParamMgr):
                )
 
 
+class MQTTNumberDiagMgr(MQTTParamMgr):
+    def __init__(self, name: str, human_name: str, device_class: str, unit: str, publish: Callable, get_state: Callable, get_available: Callable):
+        self.name = name
+        self.human_name = human_name
+        self.device_class = device_class
+        self.unit = unit
+        self.publish = publish
+        self.get_state = get_state
+        self.get_available = get_available
+
+        self.state_topic = f"scharge/{self.name}/state"
+        self.command_topic = f"scharge/{self.name}/set"
+        self.availability_topic = f"scharge/{self.name}/available"
+
+    async def publish_state(self):
+        await self.publish(self.state_topic, self.get_state_msg())
+
+    def get_state_msg(self):
+        return self.get_state()
+
+    def get_availability_msg(self):
+        if self.get_available():
+            return "online"
+        else:
+            return "offline"
+
+    def get_description(self):
+        return (
+                f"scharge_{self.name}",
+                {
+                    "p": "sensor",
+                    "name": f"{self.human_name}",
+                    "unique_id": f"scharge_{self.name}",
+                    "device_class": self.device_class,
+                    "entity_category": "diagnostic",
+                    "unit_of_measurement": self.unit,
+                    "state_topic": self.state_topic,
+                    "command_topic": self.command_topic,
+                    "availability_topic": self.availability_topic,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
+                    "availability_mode": "latest",
+                    "expire_after": 10,
+                    "qos": 0,
+                }
+               )
+
+
+class MQTTBinarySensorMgr(MQTTParamMgr):
+    def __init__(self, name: str, human_name: str, device_class: str, publish: Callable, get_state: Callable, get_available: Callable):
+        self.name = name
+        self.human_name = human_name
+        self.device_class = device_class
+        self.publish = publish
+        self.get_state = get_state
+        self.get_available = get_available
+
+        self.state_topic = f"scharge/{self.name}/state"
+        self.command_topic = None
+        self.availability_topic = f"scharge/{self.name}/available"
+
+    async def publish_state(self):
+        await self.publish(self.state_topic, self.get_state_msg())
+
+    def get_state_msg(self):
+        if self.get_state():
+            return "ON"
+        else:
+            return "OFF"
+
+    def get_availability_msg(self):
+        if self.get_available():
+            return "online"
+        else:
+            return "offline"
+
+    def get_description(self):
+        return (
+                f"scharge_{self.name}",
+                {
+                    "p": "binary_sensor",
+                    "name": f"{self.human_name}",
+                    "unique_id": f"scharge_{self.name}",
+                    "device_class": self.device_class,
+                    "state_topic": self.state_topic,
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "availability_topic": self.availability_topic,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
+                    "availability_mode": "latest",
+                    "expire_after": 10,
+                    "qos": 0,
+                }
+               )
+
+
 class MQTTEnumSensorMgr(MQTTParamMgr):
     def __init__(self, name: str, human_name: str, options: List[str], publish: Callable, get_state: Callable, get_available: Callable):
         self.name = name
@@ -129,11 +226,11 @@ class MQTTEnumSensorMgr(MQTTParamMgr):
         self.command_topic = None
         self.availability_topic = f"scharge/{self.name}/available"
 
-    async def publish_state(self, new_state):
-        await self.publish(self.state_topic, new_state)
-
     def get_state_msg(self):
         return self.get_state()
+
+    async def publish_state(self):
+        await self.publish(self.state_topic, self.get_state_msg())
 
     def get_availability_msg(self):
         if self.get_available():
@@ -162,10 +259,11 @@ class MQTTEnumSensorMgr(MQTTParamMgr):
 
 
 class MQTTSensorMgr(MQTTParamMgr):
-    def __init__(self, name: str, human_name: str, device_class: str, unit: str, publish: Callable, get_state: Callable, get_available: Callable):
+    def __init__(self, name: str, human_name: str, device_class: str, unit: str, publish: Callable, get_state: Callable, get_available: Callable, state_class: str = "measurement"):
         self.name = name
         self.human_name = human_name
         self.device_class = device_class
+        self.state_class = state_class
         self.unit = unit
         self.publish = publish
         self.get_state = get_state
@@ -175,8 +273,8 @@ class MQTTSensorMgr(MQTTParamMgr):
         self.command_topic = None
         self.availability_topic = f"scharge/{self.name}/available"
 
-    async def publish_state(self, new_state):
-        await self.publish(self.state_topic, new_state)
+    async def publish_state(self):
+        await self.publish(self.state_topic, self.get_state_msg())
 
     def get_state_msg(self):
         return self.get_state()
@@ -195,7 +293,7 @@ class MQTTSensorMgr(MQTTParamMgr):
                     "name": f"{self.human_name}",
                     "unique_id": f"scharge_{self.name}",
                     "device_class": self.device_class,
-                    "state_class": "measurement",
+                    "state_class": self.state_class,
                     "unit_of_measurement": self.unit,
                     "state_topic": self.state_topic,
                     "availability_topic": self.availability_topic,
@@ -221,8 +319,8 @@ class MQTTBinarySensorMgr(MQTTParamMgr):
         self.command_topic = None
         self.availability_topic = f"scharge/{self.name}/available"
 
-    async def publish_state(self, new_state):
-        await self.publish(self.state_topic, new_state)
+    async def publish_state(self):
+        await self.publish(self.state_topic, self.get_state_msg())
 
     def get_state_msg(self):
         if self.get_state():

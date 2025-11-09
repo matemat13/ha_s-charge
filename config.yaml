@@ -30,4 +30,4 @@ options:
 
 schema:
   charger_serial_number: "str"
-  websocket_receive_port: "str?"
+  websocket_receive_port: "str"

@@ -71,6 +71,19 @@ class MQTTClient:
             self.scharge_conn.charger_state.register_update_cbk(set_current_mqtt_mgr.publish_state)
             self.topic_mgrs.append(set_current_mqtt_mgr)
 
+            set_energy_mqtt_mgr = MQTTSensorMgr(
+                        name="total_energy_calc",
+                        human_name="Total Energy Charged",
+                        device_class="energy",
+                        state_class="total_increasing",
+                        unit="kWh",
+                        publish=self.publish,
+                        get_state=self.get_total_charged_energy,
+                        get_available=self.scharge_conn.charger_state.initialized
+                        )
+            self.scharge_conn.charger_state.register_update_cbk(set_energy_mqtt_mgr.publish_state)
+            self.topic_mgrs.append(set_energy_mqtt_mgr)
+
             self.topic_mgrs += self.scharge_conn.charger_state.register_mqtt_mgrs(self.publish)
 
             msg = self.generate_discovery_payload(self.scharge_conn)
@@ -97,6 +110,14 @@ class MQTTClient:
             for mgr in self.topic_mgrs:
                 await self.publish(mgr.availability_topic, mgr.get_availability_msg())
             await asyncio.sleep(3)
+    
+    def get_total_charged_energy(self):
+        total_energy = self.scharge_conn.charger_state.totalPower.value
+        for connector in self.scharge_conn.charger_state.connectors:
+            cur_charge_energy = connector.electricWork.value
+            if connector.is_charging():
+                total_energy += cur_charge_energy
+        return total_energy
 
     async def process_switch_charging(self, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
         connectorId = 1
