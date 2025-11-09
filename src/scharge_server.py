@@ -313,8 +313,8 @@ class SChargeConn:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Please specify the charger serial number and this computer's IP address!")
+    if len(sys.argv) < 4:
+        print("Please specify the charger serial number, this computer's IP address, and a serial port (\"auto\" to autoselect)!")
         exit(1)
 
     logger = logging.getLogger("S-Charge_server")
@@ -333,7 +333,10 @@ if __name__ == "__main__":
 
     charge_box_serial = sys.argv[1]
     rcv_ip = sys.argv[2]
-    s_charge_conn = SChargeConn(charge_box_serial, rcv_ip, logger)
+    rcv_port = sys.argv[3]
+    if rcv_port == "auto":
+        rcv_port = None
+    s_charge_conn = SChargeConn(charge_box_serial, rcv_ip, rcv_port, logger=logger)
     try:
         asyncio.run(s_charge_conn.main())
     except KeyboardInterrupt:
