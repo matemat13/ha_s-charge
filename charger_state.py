@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 from messages_rx import *
 from typing import Type, Callable
+from enum import Enum, StrEnum
 
 from mqtt_managers import *
+
+
+class ChargeStatusEnum(StrEnum):
+    WAIT = "wait"
+    CHARGING = "charging"
+    FINISHED = "finished"
+    IDLE = "idle"
+
 
 class ChargerParam:
     def __init__(self, human_name : str, value_type: Type, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", device_class: str = "", transform : Callable = lambda x : x):
@@ -61,6 +70,18 @@ class ChargerParam:
                             name=self.ha_topic,
                             human_name=self.human_name,
                             device_class=self.device_class,
+                            publish=f_publish,
+                            get_state=get_state,
+                            get_available=f_initialized
+                            )
+                self.cbk_on_update = ret.publish_state
+                return [ret]
+            elif self.device_class == "enum":
+                get_state = self.get
+                ret = MQTTEnumSensorMgr(
+                            name=self.ha_topic,
+                            human_name=self.human_name,
+                            options=[e.value for e in self.transform],
                             publish=f_publish,
                             get_state=get_state,
                             get_available=f_initialized
@@ -141,9 +162,11 @@ class ChargerState:
             self.chargeStatus = ChargerParam(
                     f"{self.connector_human_name} Charging Status",
                     value_type=str,
+                    device_class="enum",
                     parse_message_type=SynchroStatus,
                     parse_json_key="chargeStatus",
-                    ha_topic=f"{self.connectorName}/charge_status"
+                    ha_topic=f"{self.connectorName}/charge_status",
+                    transform=ChargeStatusEnum
                     )
             self.startTime = ChargerParam(
                     f"{self.connector_human_name} Charging Start Time",
@@ -251,7 +274,7 @@ class ChargerState:
             return self.connectionStatus.value
 
         def is_charging(self):
-            return self.chargeStatus.value == "charging" or self.chargeStatus.value == "wait"
+            return self.chargeStatus.value == "charging"
 
         def register_mqtt_mgrs(self, f_publish, f_initialized):
             ret: list[MQTTParamMgr] = []
@@ -379,6 +402,8 @@ class ChargerState:
                     self.meterInfo,
                 ]
 
+        self.cbks_on_update = []
+
     def __str__(self):
         initialized_txt =  "not initialized"
         if self.initialized():
@@ -395,6 +420,9 @@ class ChargerState:
 
         for param in self.params:
             await param.update(message)
+
+        for cbk in self.cbks_on_update:
+            await cbk()
 
     def initialized(self):
         return all(x.initialized() for x in self.params)
@@ -413,6 +441,9 @@ class ChargerState:
             connectorId = 1
 
         return self.connectors[connectorId-1].current.value
+
+    def register_update_cbk(self, f_cbk):
+        self.cbks_on_update.append(f_cbk)
 
     def register_mqtt_mgrs(self, f_publish):
         ret: list[MQTTParamMgr] = []

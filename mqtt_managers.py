@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from typing import Callable
+from typing import Callable, List
 
 
 class MQTTParamMgr:
@@ -8,10 +8,11 @@ class MQTTParamMgr:
 
 
 class MQTTSwitchMgr(MQTTParamMgr):
-    def __init__(self, name: str, human_name: str, process_msg: Callable, get_state: Callable, get_available: Callable):
+    def __init__(self, name: str, human_name: str, process_msg: Callable, publish: Callable, get_state: Callable, get_available: Callable):
         self.name = name
         self.human_name = human_name
         self.process_msg = process_msg
+        self.publish = publish
         self.get_state = get_state
         self.get_available = get_available
 
@@ -24,6 +25,9 @@ class MQTTSwitchMgr(MQTTParamMgr):
             return "ON"
         else:
             return "OFF"
+
+    async def publish_state(self):
+        await self.publish(self.state_topic, self.get_state_msg())
 
     def get_availability_msg(self):
         if self.get_available():
@@ -57,13 +61,14 @@ class MQTTSwitchMgr(MQTTParamMgr):
 
 
 class MQTTNumberMgr(MQTTParamMgr):
-    def __init__(self, name: str, human_name: str, minimum: float | int, maximum: float | int, step: float | int, process_msg: Callable, get_state: Callable, get_available: Callable):
+    def __init__(self, name: str, human_name: str, minimum: float | int, maximum: float | int, step: float | int, process_msg: Callable, publish: Callable, get_state: Callable, get_available: Callable):
         self.name = name
         self.human_name = human_name
         self.minimum = minimum
         self.maximum = maximum
         self.step = step
         self.process_msg = process_msg
+        self.publish = publish
         self.get_state = get_state
         self.get_available = get_available
 
@@ -73,6 +78,9 @@ class MQTTNumberMgr(MQTTParamMgr):
 
     def get_state_msg(self):
         return self.get_state()
+
+    async def publish_state(self):
+        await self.publish(self.state_topic, self.get_state_msg())
 
     def get_availability_msg(self):
         if self.get_available():
@@ -103,6 +111,52 @@ class MQTTNumberMgr(MQTTParamMgr):
                     "optimistic": True,
                     "qos": 0,
                     "retain": True,
+                }
+               )
+
+
+class MQTTEnumSensorMgr(MQTTParamMgr):
+    def __init__(self, name: str, human_name: str, options: List[str], publish: Callable, get_state: Callable, get_available: Callable):
+        self.name = name
+        self.human_name = human_name
+        self.device_class = "enum"
+        self.options = options
+        self.publish = publish
+        self.get_state = get_state
+        self.get_available = get_available
+
+        self.state_topic = f"scharge/{self.name}/state"
+        self.command_topic = None
+        self.availability_topic = f"scharge/{self.name}/available"
+
+    async def publish_state(self, new_state):
+        await self.publish(self.state_topic, new_state)
+
+    def get_state_msg(self):
+        return self.get_state()
+
+    def get_availability_msg(self):
+        if self.get_available():
+            return "online"
+        else:
+            return "offline"
+
+    def get_description(self):
+        return (
+                f"scharge_{self.name}",
+                {
+                    "p": "sensor",
+                    "name": f"{self.human_name}",
+                    "unique_id": f"scharge_{self.name}",
+                    "device_class": self.device_class,
+                    "options": self.options,
+                    "state_topic": self.state_topic,
+                    "availability_topic": self.availability_topic,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
+                    "availability_mode": "latest",
+                    "expire_after": 10,
+                    "qos": 0,
                 }
                )
 

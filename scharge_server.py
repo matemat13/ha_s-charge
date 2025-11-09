@@ -123,9 +123,9 @@ class SChargeConn:
             self.logger.debug(f"Sending stop charging command.")
             res = await self.send_authorize_msg(self.charger_state.connectors[connector_idx].miniCurrent.value, "Stop", connectorId)
             self.logger.debug(res)
-            if self.charger_state.connectors[connector_idx].chargeStatus.value != "finish":
+            if self.charger_state.connectors[connector_idx].is_charging():
                 retries += 1
-                self.logger.debug(f"The charge status does not match the desired ({self.charger_state.connectors[connector_idx].chargeStatus} != finish). Tries: {retries}/{max_retries}.")
+                self.logger.debug(f"The charge status ({self.charger_state.connectors[connector_idx].chargeStatus}) does not match the desired. Tries: {retries}/{max_retries}.")
                 self.logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
                 if retries > max_retries:
                     return False

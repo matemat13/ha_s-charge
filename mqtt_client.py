@@ -28,26 +28,30 @@ class MQTTClient:
                 await asyncio.sleep(1)
             discovery_topic = f"homeassistant/device/scharge{self.scharge_conn.charge_box_serial}/config"
 
-            self.topic_mgrs.append(
-                    MQTTSwitchMgr(
+            charging_mqtt_mgr = MQTTSwitchMgr(
                         name="charging",
                         human_name="Charging",
                         process_msg=self.process_switch_charging,
+                        publish=self.publish,
                         get_state=self.scharge_conn.charger_state.is_charging,
-                        get_available=self.scharge_conn.charger_state.initialized)
-                    )
+                        get_available=self.scharge_conn.charger_state.initialized
+                        )
+            self.scharge_conn.charger_state.register_update_cbk(charging_mqtt_mgr.publish_state)
+            self.topic_mgrs.append(charging_mqtt_mgr)
 
-            self.topic_mgrs.append(
-                    MQTTNumberMgr(
+            set_current_mqtt_mgr = MQTTNumberMgr(
                         name="set_current",
                         human_name="Set Current",
                         minimum=self.scharge_conn.charger_state.connectorMain.miniCurrent.value,
                         maximum=self.scharge_conn.charger_state.connectorMain.maxCurrent.value,
                         step=1,
                         process_msg=self.process_set_current,
-                        get_state=self.scharge_conn.charger_state.is_charging,
-                        get_available=self.scharge_conn.charger_state.initialized)
-                    )
+                        publish=self.publish,
+                        get_state=lambda: self.desired_current,
+                        get_available=self.scharge_conn.charger_state.initialized
+                        )
+            self.scharge_conn.charger_state.register_update_cbk(set_current_mqtt_mgr.publish_state)
+            self.topic_mgrs.append(set_current_mqtt_mgr)
 
             self.topic_mgrs += self.scharge_conn.charger_state.register_mqtt_mgrs(self.publish)
 
