@@ -200,7 +200,7 @@ class ChargerState:
                     unit="V",
                     parse_message_type=SynchroData,
                     parse_json_key="voltage",
-                    ha_topic=f"{self.connectorName}.charge_voltage"
+                    ha_topic=f"{self.connectorName}/charge_voltage"
                     )
             self.current = ChargerParam(
                     f"{self.connector_human_name} Current",
@@ -209,7 +209,7 @@ class ChargerState:
                     unit="A",
                     parse_message_type=SynchroData,
                     parse_json_key="current",
-                    ha_topic=f"{self.connectorName}.charge_current")
+                    ha_topic=f"{self.connectorName}/charge_current")
             self.power = ChargerParam(
                     f"{self.connector_human_name} Power",
                     value_type=float,
@@ -217,7 +217,7 @@ class ChargerState:
                     unit="kW",
                     parse_message_type=SynchroData,
                     parse_json_key="power",
-                    ha_topic=f"{self.connectorName}.charge_power"
+                    ha_topic=f"{self.connectorName}/charge_power"
                     )
             self.electricWork = ChargerParam(
                     f"{self.connector_human_name} Charged Energy",
@@ -226,14 +226,14 @@ class ChargerState:
                     unit="kWh",
                     parse_message_type=SynchroData,
                     parse_json_key="electricWork",
-                    ha_topic=f"{self.connectorName}.charge_energy"
+                    ha_topic=f"{self.connectorName}/charge_energy"
                     )
             self.chargingTime = ChargerParam(
                     f"{self.connector_human_name} Charging Duration",
                     value_type=str,
                     parse_message_type=SynchroData,
                     parse_json_key="chargingTime",
-                    ha_topic=f"{self.connectorName}.charge_duration"
+                    ha_topic=f"{self.connectorName}/charge_duration"
                     )
 
             self.params = [
