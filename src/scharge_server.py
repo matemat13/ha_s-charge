@@ -44,6 +44,17 @@ class SChargeConn:
         self.message_timeout_s = 30.0
         self.last_message_time = 0.0
 
+        # Charging current management; see current_reconcile_loop().
+        self.desired_current = None
+        self.applied_current = {}   # connectorId -> setpoint the charger acked
+        self.charging_since = {}    # connectorId -> when that setpoint landed
+        self.stopping = set()       # connectorIds we have asked to stop
+        self.reconcile_period_s = 2.0
+        self.current_settle_s = 10.0
+        self.current_ceiling_margin_A = 1.0
+        self.charging_start_timeout_s = 30.0
+        self.charging_stop_timeout_s = 30.0
+
         self.loop_tasks = set()
 
     async def send_authorize_msg(self, current: int, purpose: str, connectorId: int):
@@ -82,62 +93,125 @@ class SChargeConn:
             self.future_confirmations.remove(confirmation)
             return False, "response timed out"
 
-    async def start_charging(self, current: int, connectorId: int, current_tolerance = 1.0) -> bool:
-        connector_idx = connectorId-1
-        max_retries = 10
+    def set_desired_current(self, current):
+        """Records the wanted charging current. current_reconcile_loop applies it."""
+        if current != self.desired_current:
+            self.logger.info(f"Desired charging current set to {current}A.")
+        self.desired_current = current
 
-        retries = 0
-        while self.charger_state.connectors[connector_idx].current.value is None:
-            self.logger.debug(f"Waiting for charger state intialization.")
-            retries += 1
-            if retries > max_retries:
-                return False
-            await asyncio.sleep(1.0)
+    async def apply_current(self, connectorId: int, current: int) -> bool:
+        """Pushes a charging current to a connector that is already charging."""
+        acked, why = await self.send_authorize_msg(current, "Start", connectorId)
+        if acked:
+            self.applied_current[connectorId] = current
+            self.charging_since[connectorId] = time.time()
+            self.logger.info(f"Applied {current}A to connector {connectorId}.")
+        else:
+            self.logger.warning(f"Could not apply {current}A to connector {connectorId}: {why}.")
+        return acked
 
-        while True:
-            self.logger.debug(f"Sending start charging command at {current}A.")
-            res = await self.send_authorize_msg(current, "Start", connectorId)
-            self.logger.debug(res)
-            if abs(self.charger_state.connectors[connector_idx].current.value - current) > current_tolerance:
-                retries += 1
-                self.logger.debug(f"The charge current does not match the desired ({self.charger_state.connectors[connector_idx].current} != {current}A). Tries: {retries}/{max_retries}.")
-                self.logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
-                if retries > max_retries:
-                    return False
-                await asyncio.sleep(3.0)
-            else:
-                break
+    async def reconcile_connector_current(self, connectorId: int):
+        connector = self.charger_state.connectors[connectorId-1]
 
-        return True
+        if not connector.is_charging():
+            self.applied_current.pop(connectorId, None)
+            self.charging_since.pop(connectorId, None)
+            self.stopping.discard(connectorId)
+            return
+
+        # We asked this connector to stop; re-sending Start would undo that.
+        if connectorId in self.stopping:
+            return
+
+        if self.desired_current is None:
+            return
+
+        # Either a session that just began -- the charger acks the first Start
+        # after a session ends but ignores the current in it, and sessions also
+        # start on their own -- or a setpoint the user has changed since.
+        if self.applied_current.get(connectorId) != self.desired_current:
+            await self.apply_current(connectorId, self.desired_current)
+            return
+
+        # Being acked does not mean it was honoured. The setpoint is a ceiling,
+        # so only an overshoot means anything: the car settles *below* the limit
+        # by a margin that grows with it (8A -> 7.17A, 10A -> 8.88A measured), so
+        # checking for equality would fire constantly.
+        since = self.charging_since.get(connectorId)
+        if since is None or time.time() - since < self.current_settle_s:
+            return
+
+        measured = connector.current.value
+        if measured is not None and measured > self.desired_current + self.current_ceiling_margin_A:
+            self.logger.warning(f"Connector {connectorId} draws {measured}A against a {self.desired_current}A limit, re-applying.")
+            await self.apply_current(connectorId, self.desired_current)
+
+    async def current_reconcile_loop(self):
+        """Keeps the charging current at what was actually asked for.
+
+        Runs as its own task rather than off a charger-state callback: applying
+        a current waits for an Ack that only arrives through the read loop, so
+        doing it inline would deadlock until that confirmation timed out.
+        """
+        try:
+            while True:
+                await asyncio.sleep(self.reconcile_period_s)
+                try:
+                    for connectorId in range(1, len(self.charger_state.connectors) + 1):
+                        await self.reconcile_connector_current(connectorId)
+                except Exception:
+                    self.logger.exception("Failed to reconcile the charging current")
+
+        except asyncio.CancelledError:
+            self.logger.info("Current reconciliation loop cancelled.")
+            raise
+
+    async def start_charging(self, current: int, connectorId: int) -> bool:
+        """Starts a session. Success means a session is running.
+
+        It does *not* mean the session runs at `current`: the charger ignores
+        the current in the first Start after a session ends. Getting the
+        setpoint to stick is current_reconcile_loop's job.
+        """
+        self.set_desired_current(current)
+        self.stopping.discard(connectorId)
+
+        acked, why = await self.send_authorize_msg(current, "Start", connectorId)
+        if not acked:
+            self.logger.warning(f"Start command for connector {connectorId} was not accepted: {why}.")
+            return False
+
+        deadline = time.time() + self.charging_start_timeout_s
+        while time.time() < deadline:
+            if self.charger_state.connectors[connectorId-1].is_charging():
+                return True
+            await asyncio.sleep(0.5)
+
+        self.logger.warning(f"Connector {connectorId} did not start charging within {self.charging_start_timeout_s}s.")
+        return False
 
     async def stop_charging(self, connectorId: int) -> bool:
-        connector_idx = connectorId-1
-        max_retries = 5
+        connector = self.charger_state.connectors[connectorId-1]
 
-        retries = 0
-        while self.charger_state.connectors[connector_idx].current.value is None:
-            self.logger.debug(f"Waiting for charger state intialization.")
-            retries += 1
-            if retries > max_retries:
-                return False
-            await asyncio.sleep(1.0)
+        # Set before sending, so the reconciler cannot restart what we stop.
+        self.stopping.add(connectorId)
 
-        retries = 0
-        while True:
-            self.logger.debug(f"Sending stop charging command.")
-            res = await self.send_authorize_msg(self.charger_state.connectors[connector_idx].miniCurrent.value, "Stop", connectorId)
-            self.logger.debug(res)
-            if self.charger_state.connectors[connector_idx].is_charging():
-                retries += 1
-                self.logger.debug(f"The charge status ({self.charger_state.connectors[connector_idx].chargeStatus}) does not match the desired. Tries: {retries}/{max_retries}.")
-                self.logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
-                if retries > max_retries:
-                    return False
-                await asyncio.sleep(3.0)
-            else:
-                break
+        acked, why = await self.send_authorize_msg(connector.miniCurrent.value, "Stop", connectorId)
+        if not acked:
+            self.logger.warning(f"Stop command for connector {connectorId} was not accepted: {why}.")
+            self.stopping.discard(connectorId)
+            return False
 
-        return True
+        deadline = time.time() + self.charging_stop_timeout_s
+        while time.time() < deadline:
+            if not connector.is_charging():
+                return True
+            await asyncio.sleep(0.5)
+
+        # Deliberately stays in self.stopping: charging is still running, and
+        # restarting it because a Stop failed is the wrong way to be wrong.
+        self.logger.warning(f"Connector {connectorId} did not stop charging within {self.charging_stop_timeout_s}s.")
+        return False
 
     async def send_message(self, websocket, message):
         self.logger.debug(f">> {message}")
@@ -352,6 +426,9 @@ class SChargeConn:
 
             self.handshake_loop_task = asyncio.create_task(self.handshake_loop(self.websocket))
             self.loop_tasks.add(self.handshake_loop_task)
+
+            self.reconcile_loop_task = asyncio.create_task(self.current_reconcile_loop())
+            self.loop_tasks.add(self.reconcile_loop_task)
 
         # self.loop_tasks.add(asyncio.create_task(self.keyboard_loop()))
 
