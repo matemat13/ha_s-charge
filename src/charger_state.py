@@ -448,6 +448,10 @@ class ChargerState:
 
         self.cbks_on_update = []
 
+        # State for total_charged_energy(); see there for what they mean.
+        self._energy_baseline = None
+        self._reported_total_energy = 0.0
+
     def __str__(self):
         initialized_txt =  "not initialized"
         if self.initialized():
@@ -473,6 +477,44 @@ class ChargerState:
 
     def is_charging(self):
         return any(conn.is_charging() for conn in self.connectors)
+
+    def total_charged_energy(self):
+        """Cumulative charged energy, including any session in progress.
+
+        The charger only folds a session into totalPower once that session
+        ends, so the running session has to be added on top. The catch is that
+        the three inputs arrive in three separate messages with no ordering
+        guarantee, and either ordering at the session boundary breaks a naive
+        sum: if the status flips to `finish` first, the session term vanishes
+        before totalPower absorbs it and the sum drops by the whole session;
+        if totalPower lands first, the session gets counted twice.
+
+        Anchoring the session to the total observed when it started makes both
+        orderings agree, and the latch covers whatever else the charger does.
+        """
+        total = self.totalPower.value
+        if total is None:
+            return None
+
+        session = sum(conn.electricWork.value or 0.0
+                      for conn in self.connectors if conn.is_charging())
+
+        if not self.is_charging():
+            self._energy_baseline = None
+        elif self._energy_baseline is None:
+            self._energy_baseline = total
+
+        candidate = total
+        if self._energy_baseline is not None:
+            # max(), not addition: once totalPower has absorbed the session the
+            # baseline is stale, and adding on top would double-count it.
+            candidate = max(total, self._energy_baseline + session)
+
+        # Never go backwards. Home Assistant treats a decrease on a
+        # total_increasing sensor as a meter reset and books the entire new
+        # value as fresh consumption, which inflates the energy dashboard.
+        self._reported_total_energy = max(self._reported_total_energy, candidate)
+        return self._reported_total_energy
 
     def get_current(self, connectorId = None):
 

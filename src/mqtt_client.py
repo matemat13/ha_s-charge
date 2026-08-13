@@ -112,12 +112,7 @@ class MQTTClient:
             await asyncio.sleep(3)
     
     def get_total_charged_energy(self):
-        total_energy = self.scharge_conn.charger_state.totalPower.value
-        for connector in self.scharge_conn.charger_state.connectors:
-            cur_charge_energy = connector.electricWork.value
-            if connector.is_charging():
-                total_energy += cur_charge_energy
-        return total_energy
+        return self.scharge_conn.charger_state.total_charged_energy()
 
     async def process_switch_charging(self, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
         connectorId = 1
