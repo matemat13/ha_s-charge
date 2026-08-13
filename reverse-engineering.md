@@ -288,6 +288,12 @@ The protocol only exposes one aggregate current per connector, so per-phase
 currents would be needed to separate these — a clamp meter on the individual
 phases would settle it in minutes.
 
+**[confirmed] Reported current and reported power can decouple almost
+entirely.** A later run held a steady **6.63 A at 0.01 kW** for 90 s — a
+substantial current at essentially zero real power, with the car presumably
+full or tapered out. No formula relating the two survives this, which settles
+the practical question even though the mechanism stays open.
+
 **Practical consequence:** do not derive power from current. The reported
 `power` is real power and is trustworthy; `√3 · U · I` is apparent power and
 only coincides with it at full load. The supply also sags measurably under load
