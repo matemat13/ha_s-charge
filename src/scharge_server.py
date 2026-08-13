@@ -54,7 +54,7 @@ class SChargeConn:
         self.current_ceiling_margin_A = 1.0
         self.charging_start_timeout_s = 30.0
         self.charging_stop_timeout_s = 30.0
-        self.shutdown_timeout_s = 5.0
+        self.shutdown_timeout_s = 3.0
 
         self.loop_tasks = set()
 
@@ -320,10 +320,15 @@ class SChargeConn:
         """
         server.close()
         try:
-            await asyncio.wait_for(asyncio.shield(server.wait_closed()),
+            await asyncio.wait_for(server.wait_closed(),
                                    timeout=self.shutdown_timeout_s)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             self.logger.warning(f"WebSocket server did not close within {self.shutdown_timeout_s}s, abandoning it.")
+            # Cancel the close it is stuck in, otherwise asyncio reports it as
+            # "Task was destroyed but it is pending" on the way out.
+            close_task = getattr(server, "close_task", None)
+            if close_task is not None:
+                close_task.cancel()
 
     async def server_loop(self):
         """Starts the WebSocket server."""
