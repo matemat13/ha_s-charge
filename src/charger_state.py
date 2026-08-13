@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import logging
+
 from messages_rx import *
 from typing import Type, Callable
 from enum import StrEnum
@@ -11,6 +13,20 @@ class ChargeStatusEnum(StrEnum):
     CHARGING = "charging"
     FINISH = "finish"
     IDLE = "idle"
+    FAULT = "fault"
+    RESERVE = "reserve"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value):
+        # This vocabulary is only known from the app's icon assets (see
+        # reverse-engineering.md), so treat it as a lower bound rather than a
+        # closed set. Falling back keeps an unseen status from raising, and the
+        # MQTT enum sensor can only publish values it declared as options.
+        logging.getLogger(__name__).warning(
+                f"Unknown charge status {value!r}, reporting it as {cls.UNKNOWN.value!r}."
+                )
+        return cls.UNKNOWN
 
 
 class ChargerParam:

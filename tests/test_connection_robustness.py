@@ -65,6 +65,10 @@ def envelope(action, payload, unique_id):
 
 
 def quiet_logger():
+    # charger_state warns on an unrecognised status, which several tests
+    # deliberately provoke. Silence it so the run's output stays clean.
+    logging.getLogger("charger_state").setLevel(logging.CRITICAL)
+
     logger = logging.getLogger("test_scharge")
     logger.setLevel(logging.CRITICAL)
     logger.addHandler(logging.NullHandler())
@@ -185,9 +189,49 @@ async def test_clean_close_is_detected_as_a_disconnect():
             )
 
 
+async def test_fault_status_is_reported():
+    """`fault` is a real charger state and must reach the charger state.
+
+    Isolating the exception keeps the connection up, but on its own it leaves
+    chargeStatus stuck on its previous value -- so Home Assistant would show a
+    faulted charger as idle.
+    """
+    async with ServerHarness() as harness:
+        async with websockets.connect(f"ws://127.0.0.1:{harness.port}") as ws:
+            charger = FakeCharger(ws)
+            await charger.initialize()
+
+            await charger.send("SynchroStatus", synchro_status("fault"))
+            await charger.collect_acks(1.0)
+
+            status = harness.conn.charger_state.connectorMain.chargeStatus.value
+            assert status == "fault", f"expected 'fault', charger state says {status!r}"
+
+
+async def test_unrecognised_status_becomes_unknown():
+    """A status we've never seen must map to a value, not be dropped.
+
+    The status list in reverse-engineering.md is a lower bound, and the MQTT
+    enum sensor can only publish values it declared as options -- so anything
+    unrecognised has to land on a declared fallback.
+    """
+    async with ServerHarness() as harness:
+        async with websockets.connect(f"ws://127.0.0.1:{harness.port}") as ws:
+            charger = FakeCharger(ws)
+            await charger.initialize()
+
+            await charger.send("SynchroStatus", synchro_status("somethingnew"))
+            await charger.collect_acks(1.0)
+
+            status = harness.conn.charger_state.connectorMain.chargeStatus.value
+            assert status == "unknown", f"expected 'unknown', got {status!r}"
+
+
 TESTS = [
     test_unknown_charge_status_keeps_connection_alive,
     test_clean_close_is_detected_as_a_disconnect,
+    test_fault_status_is_reported,
+    test_unrecognised_status_becomes_unknown,
 ]
 
 
