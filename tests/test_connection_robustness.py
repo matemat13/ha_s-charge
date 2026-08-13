@@ -256,12 +256,72 @@ async def test_a_silent_charger_is_treated_as_disconnected():
                 )
 
 
+async def shutdown_subject():
+    """Subprocess half of test_shutdown_completes_while_a_charger_is_connected.
+
+    Serves until a charger connects, then returns -- which is what hands
+    control to asyncio.run()'s teardown.
+    """
+    conn = SChargeConn(SERIAL, "127.0.0.1", None, logger=quiet_logger())
+
+    # The real loop would broadcast on the LAN and invite the actual charger in.
+    async def no_broadcast(*args, **kwargs):
+        await asyncio.Event().wait()
+    conn.udp_handshake_loop = no_broadcast
+
+    asyncio.create_task(conn.main())
+    while not (getattr(conn, "rcv_port_evt", None) and conn.rcv_port_evt.is_set()):
+        await asyncio.sleep(0.05)
+    print(conn.rcv_port, flush=True)
+
+    while getattr(conn, "connected_ws_evt", None) is None:
+        await asyncio.sleep(0.05)
+    await conn.connected_ws_evt.wait()
+    await asyncio.sleep(1.0)  # let a few messages flow
+
+
+async def test_shutdown_completes_while_a_charger_is_connected():
+    """The process must actually exit when its work is done.
+
+    Observed twice against the real charger: on teardown server_loop logs
+    "Server loop cancelled. Closing WebSocket server." and then hangs forever,
+    so the addon only stops once the Supervisor gives up and SIGKILLs it.
+
+    Runs in a subprocess because the symptom *is* the process not exiting.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, os.path.abspath(__file__), "--shutdown-subject",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    ws = None
+    try:
+        line = await asyncio.wait_for(proc.stdout.readline(), timeout=15)
+        port = int(line.strip())
+
+        ws = await websockets.connect(f"ws://127.0.0.1:{port}")
+        charger = FakeCharger(ws)
+        await charger.initialize()
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=15)
+        except asyncio.TimeoutError:
+            raise AssertionError(
+                "shutdown hung with a charger connected -- the process would "
+                "only exit on SIGKILL")
+    finally:
+        if ws is not None:
+            await ws.close()
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
 TESTS = [
     test_unknown_charge_status_keeps_connection_alive,
     test_clean_close_is_detected_as_a_disconnect,
     test_fault_status_is_reported,
     test_unrecognised_status_becomes_unknown,
     test_a_silent_charger_is_treated_as_disconnected,
+    test_shutdown_completes_while_a_charger_is_connected,
 ]
 
 
@@ -284,4 +344,7 @@ async def main():
 
 
 if __name__ == "__main__":
+    if "--shutdown-subject" in sys.argv:
+        asyncio.run(shutdown_subject())
+        sys.exit(0)
     sys.exit(asyncio.run(main()))

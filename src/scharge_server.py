@@ -54,6 +54,7 @@ class SChargeConn:
         self.current_ceiling_margin_A = 1.0
         self.charging_start_timeout_s = 30.0
         self.charging_stop_timeout_s = 30.0
+        self.shutdown_timeout_s = 5.0
 
         self.loop_tasks = set()
 
@@ -309,31 +310,46 @@ class SChargeConn:
                 self.logger.info("Charger disconnected.")
                 self.disconnected_evt.set()
 
+    async def close_server(self, server):
+        """Closes the WebSocket server without letting shutdown block forever.
+
+        wait_closed() returns only once every connection handler has returned.
+        During interpreter teardown those handlers have themselves been
+        cancelled and it never returns, so an unbounded wait here is the
+        difference between the process exiting and being SIGKILLed.
+        """
+        server.close()
+        try:
+            await asyncio.wait_for(asyncio.shield(server.wait_closed()),
+                                   timeout=self.shutdown_timeout_s)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self.logger.warning(f"WebSocket server did not close within {self.shutdown_timeout_s}s, abandoning it.")
+
     async def server_loop(self):
+        """Starts the WebSocket server."""
         self.disconnected_evt = asyncio.Event()
         self.logger.info(f"Starting WebSocket server on {self.rcv_ip}:{self.rcv_port}")
-        """Starts the WebSocket server."""
-        async with websockets.serve(self.process_websocket, host=self.rcv_ip, port=self.rcv_port, ping_timeout=float("inf")) as server:
-            try:
-                socket = server.sockets[0]
-                self.rcv_port = (socket.getsockname()[1])
-                self.rcv_port_evt.set()
-                self.logger.info(f"Started WebSocket server on {self.rcv_ip}:{self.rcv_port}")
 
-                self.logger.info("Waiting if server disconnects")
-                await self.disconnected_evt.wait()
-                server.close()
-                await server.wait_closed()
+        # Deliberately not `async with`: its __aexit__ waits on wait_closed()
+        # unbounded, which is the thing that hangs shutdown.
+        server = await websockets.serve(self.process_websocket, host=self.rcv_ip, port=self.rcv_port, ping_timeout=float("inf"))
+        try:
+            socket = server.sockets[0]
+            self.rcv_port = (socket.getsockname()[1])
+            self.rcv_port_evt.set()
+            self.logger.info(f"Started WebSocket server on {self.rcv_ip}:{self.rcv_port}")
 
-            except asyncio.CancelledError:
-                self.logger.info("Server loop cancelled. Closing WebSocket server.")
-                self.shutdown = True
-                server.close()
-                await server.wait_closed()
-                raise
+            self.logger.info("Waiting if server disconnects")
+            await self.disconnected_evt.wait()
 
-            finally:
-                self.websocket = None
+        except asyncio.CancelledError:
+            self.logger.info("Server loop cancelled. Closing WebSocket server.")
+            self.shutdown = True
+            raise
+
+        finally:
+            self.websocket = None
+            await self.close_server(server)
 
     async def udp_handshake_loop(self, ip_address, port):
         """Broadcasts UDP handshake messages until connected."""
