@@ -14,7 +14,7 @@ class ChargeStatusEnum(StrEnum):
 
 
 class ChargerParam:
-    def __init__(self, human_name : str, value_type: Type, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", device_class: str = "", state_class: str = "measurement", is_sensor: bool = True, transform : Callable = lambda x : x):
+    def __init__(self, human_name : str, value_type: Type, parse_message_type : Type[PayloadMsg], parse_json_key : str, ha_topic : str, unit : str = "", device_class: str | None = None, state_class: str = "measurement", is_sensor: bool = True, transform : Callable = lambda x : x):
         self.human_name = human_name
         self.human_name_colon = self.human_name + ":"
         self.parse_message_type = parse_message_type
@@ -49,7 +49,7 @@ class ChargerParam:
         return self.value
 
     def register_mqtt_mgrs(self, f_publish, f_initialized):
-        if self.device_class != "":
+        if self.device_class is not None:
             if self.value_type == int or self.value_type == float:
                 if self.is_sensor:
                     ret = MQTTSensorMgr(
@@ -368,7 +368,7 @@ class ChargerState:
         self.chargeTimes = ChargerParam(
                 "number of charges",
                 value_type=int,
-                device_class="none",
+                device_class=None,
                 state_class="total_increasing",
                 parse_message_type=DeviceData,
                 parse_json_key="chargeTimes",
