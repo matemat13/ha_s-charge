@@ -147,6 +147,30 @@ class SChargeConn:
         message = msg.encode()
         await self.send_message(websocket, message)
 
+    async def process_message(self, websocket, message):
+        """Handles a single message from the charger."""
+        self.logger.debug(f"<< {message}")
+        msg_json = json.loads(message)
+
+        msg_serial = msg_json["payload"]["chargeBoxSN"]
+        if msg_serial != self.charge_box_serial:
+            self.logger.info(f"Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
+            return
+
+        # If it's an Ack message check if we're not expecting confirmation for a message
+        if msg_json["messageTypeId"] == Ack.messageTypeId:
+            for future_confirmation in self.future_confirmations:
+                if future_confirmation.uniqueId == int(msg_json["uniqueId"]):
+                    future_confirmation.set_result(msg_json["payload"]["result"])
+
+        # Otherwise it's a payload message, send an ack for it and then process it
+        else:
+            asyncio.create_task(self.send_ack(websocket, msg_json["uniqueId"]))
+
+            msg_parsed = parse_json(msg_json)
+            if msg_parsed is not None:
+                await self.charger_state.update(msg_parsed)
+
     async def process_websocket(self, websocket):
         """Handles messages from the connected charger."""
         try:
@@ -157,32 +181,26 @@ class SChargeConn:
                 self.logger.info(f"Connection established with {remote_ip}:{remote_port}!")
 
             async for message in websocket:
-                self.logger.debug(f"<< {message}")
-                msg_json = json.loads(message)
+                try:
+                    await self.process_message(websocket, message)
+                except Exception:
+                    # One unexpected message must never cost us the connection.
+                    # The charger is the only source of data and it only
+                    # reconnects after a fresh UDP handshake, so a dropped
+                    # connection strands the integration until it is restarted.
+                    self.logger.exception(f"Failed to process message {message}")
 
-                msg_serial = msg_json["payload"]["chargeBoxSN"]
-                if msg_serial != self.charge_box_serial:
-                    self.logger.info("Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
-                    continue
+        except (websockets.exceptions.ConnectionClosed, ConnectionResetError) as e:
+            self.logger.info(f"Websocket connection lost: {e}")
 
-                # If it's an Ack message check if we're not expecting confirmation for a message
-                if msg_json["messageTypeId"] == Ack.messageTypeId:
-                    for future_confirmation in self.future_confirmations:
-                        if future_confirmation.uniqueId == int(msg_json["uniqueId"]):
-                            future_confirmation.set_result(msg_json["payload"]["result"])
-
-                # Otherwise it's a payload message, sned an ack for it and then process it
-                else:
-                    # print("Got message, sending ack")
-                    asyncio.create_task(self.send_ack(websocket, msg_json["uniqueId"]))
-
-                    msg_parsed = parse_json(msg_json)
-                    if msg_parsed is not None:
-                        await self.charger_state.update(msg_parsed)
-                        # print(f"{self.charger_state}")
-        except (websockets.exceptions.ConnectionClosedError, ConnectionResetError) as e:
-            self.logger.info(f"Websocket server disconnected: {e}")
-            self.disconnected_evt.set()
+        finally:
+            # Also reached on a clean close: the websockets async iterator
+            # swallows ConnectionClosedOK and simply stops, so without this the
+            # server would wait on disconnected_evt forever and never
+            # rebroadcast the UDP handshake the charger needs to come back.
+            if self.websocket is websocket:
+                self.logger.info("Charger disconnected.")
+                self.disconnected_evt.set()
 
     async def server_loop(self):
         self.disconnected_evt = asyncio.Event()
