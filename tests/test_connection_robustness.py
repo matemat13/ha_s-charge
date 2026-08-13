@@ -82,8 +82,10 @@ class ServerHarness:
     and invite the actual charger to connect to the test.
     """
 
-    def __init__(self):
+    def __init__(self, message_timeout_s=None):
         self.conn = SChargeConn(SERIAL, "127.0.0.1", None, logger=quiet_logger())
+        if message_timeout_s is not None:
+            self.conn.message_timeout_s = message_timeout_s
 
     async def __aenter__(self):
         self.conn.rcv_port_evt = asyncio.Event()
@@ -227,11 +229,39 @@ async def test_unrecognised_status_becomes_unknown():
             assert status == "unknown", f"expected 'unknown', got {status!r}"
 
 
+async def test_a_silent_charger_is_treated_as_disconnected():
+    """A connection that dies without a TCP reset must still be noticed.
+
+    If the charger loses power or its WiFi drops, the socket can stay open
+    indefinitely from our side. websockets' own keepalive timeout is disabled
+    (ping_timeout=inf in server_loop), so nothing detects this until TCP gives
+    up minutes later -- and meanwhile the UDP handshake is never rebroadcast,
+    so the charger cannot get back in.
+
+    The charger sends a Heartbeat roughly every 12 s on top of its data
+    messages (see reverse-engineering.md), so silence is a reliable signal.
+    """
+    async with ServerHarness(message_timeout_s=1.0) as harness:
+        async with websockets.connect(f"ws://127.0.0.1:{harness.port}") as ws:
+            charger = FakeCharger(ws)
+            await charger.initialize()
+
+            # Say nothing from here on, while holding the socket open.
+            try:
+                await asyncio.wait_for(harness.conn.disconnected_evt.wait(), timeout=8)
+            except asyncio.TimeoutError:
+                raise AssertionError(
+                    "a silent charger was never detected -- the server would "
+                    "hold a dead connection instead of rebroadcasting"
+                )
+
+
 TESTS = [
     test_unknown_charge_status_keeps_connection_alive,
     test_clean_close_is_detected_as_a_disconnect,
     test_fault_status_is_reported,
     test_unrecognised_status_becomes_unknown,
+    test_a_silent_charger_is_treated_as_disconnected,
 ]
 
 

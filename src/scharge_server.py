@@ -39,6 +39,10 @@ class SChargeConn:
         self.confirmation_timeout_s = 5.0
         self.handshake_period_s = 3.0
         self.request_data_period_s = 0.3
+        # The charger sends a Heartbeat about every 12s on top of its data
+        # messages, so this leaves plenty of room before we call it dead.
+        self.message_timeout_s = 30.0
+        self.last_message_time = 0.0
 
         self.loop_tasks = set()
 
@@ -171,8 +175,30 @@ class SChargeConn:
             if msg_parsed is not None:
                 await self.charger_state.update(msg_parsed)
 
+    async def watchdog_loop(self, websocket):
+        """Closes the connection if the charger goes quiet.
+
+        A charger that loses power or drops off the WiFi can leave the socket
+        open from our side indefinitely. Nothing else notices: server_loop
+        disables the websockets keepalive timeout with ping_timeout=inf, so
+        this would only surface when TCP finally gives up, minutes later, with
+        the UDP handshake never rebroadcast in the meantime.
+        """
+        try:
+            while True:
+                await asyncio.sleep(self.message_timeout_s / 2)
+                silence_s = time.time() - self.last_message_time
+                if silence_s > self.message_timeout_s:
+                    self.logger.warning(f"Nothing from the charger for {silence_s:.0f}s, assuming the connection is dead.")
+                    await websocket.close()
+                    return
+
+        except asyncio.CancelledError:
+            raise
+
     async def process_websocket(self, websocket):
         """Handles messages from the connected charger."""
+        watchdog_task = None
         try:
             if self.websocket is None:
                 self.websocket = websocket
@@ -180,7 +206,11 @@ class SChargeConn:
                 remote_ip, remote_port = websocket.remote_address
                 self.logger.info(f"Connection established with {remote_ip}:{remote_port}!")
 
+            self.last_message_time = time.time()
+            watchdog_task = asyncio.create_task(self.watchdog_loop(websocket))
+
             async for message in websocket:
+                self.last_message_time = time.time()
                 try:
                     await self.process_message(websocket, message)
                 except Exception:
@@ -194,6 +224,9 @@ class SChargeConn:
             self.logger.info(f"Websocket connection lost: {e}")
 
         finally:
+            if watchdog_task is not None:
+                watchdog_task.cancel()
+
             # Also reached on a clean close: the websockets async iterator
             # swallows ConnectionClosedOK and simply stops, so without this the
             # server would wait on disconnected_evt forever and never
