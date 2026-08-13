@@ -25,8 +25,10 @@ First, set up a virtual environment as
 ```bash
 python3 -m venv scharge_venv
 source scharge_venv/bin/activate
-pip3 install aiomqtt websockets
+pip3 install -r requirements.txt
 ```
+The versions in `requirements.txt` are pinned, and are the ones the addon image
+is built with, so a local run matches what Home Assistant runs.
 
 Then, you can either start only the data websocket server that communicates with the charger using
 ```bash

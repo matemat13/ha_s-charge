@@ -1,0 +1,8 @@
+# Pinned so rebuilding the addon cannot silently change the library versions
+# underneath it. These are what the integration is tested against.
+#
+# paho-mqtt is a dependency of aiomqtt rather than something imported directly,
+# but it is pinned too so a build is reproducible all the way down.
+aiomqtt==2.4.0
+paho-mqtt==2.1.0
+websockets==15.0.1
