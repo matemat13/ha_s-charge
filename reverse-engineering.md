@@ -215,46 +215,98 @@ firmware, quoting model, serial, and firmware version.
 investigation. It is verified working against a simulated charge point and is
 kept for the case where OCPP firmware becomes available. See `tools/README.md`.
 
+## 5a. Setting the charging current — measured
+
+Measured live on 2026-08-13 against connector 2 with a car attached, sending
+`Authorize` with `purpose: "Start"` directly (raw data in
+`artifacts/current_experiment.csv`).
+
+**[confirmed] The first `Start` after a session ends ignores the requested
+current.** From `chargeStatus: finish`, `Start` at 6 A was accepted
+(`result=True`) and the car then drew **30.95 A / 21.2 kW** — full rate — for
+the whole 75 s step.
+
+**[confirmed] A `Start` re-sent during an active session does apply the
+current.** Requesting 8 A while already charging moved the draw from 30.93 A to
+7.17 A within about 4 seconds. Requesting 10 A then moved it to 8.88 A. This is
+the mechanism behind "changing the charging current requires clicking the Charge
+button again" in `known-issues.md`.
+
+**[confirmed] `reserveCurrent` does not echo the requested current.** It stayed
+`0` through every step, confirming it belongs to the scheduled-charging feature
+(§4.4) and is useless for verifying a setpoint.
+
+**[confirmed] The car draws less than the limit**, by a margin that grows with
+the setpoint: 8 A → 7.17 A, 10 A → 8.88 A. So the `current_tolerance = 1.0` in
+`start_charging` is too tight — at 10 A the deviation is 1.12 A and the retry
+loop would fire even though the setpoint was applied correctly. Verifying a
+setpoint against the *measured* current is unreliable in general; tracking the
+last setpoint actually sent is the sounder approach.
+
+**[confirmed]** `chargeStatus` values seen live across the run: `charging`,
+`finish`, `wait`.
+
 ## 6. Electrical model
 
 **[confirmed]** `evsePhase` is `threephase` and the reported per-connector voltage
 is ≈406 V — line-to-line on a 400 V system, not phase-to-neutral.
 
-**[untested]** Therefore power should follow the three-phase relation rather than
-a naive product:
+**[confirmed] At full load, `P = √3 × V_LL × I` holds to 0.1 %**, so `current`
+is a per-phase figure and `voltage` is line-to-line:
 
 ```
-P = √3 × V_LL × I ≈ 1.732 × 406 × I     →  16 A ≈ 11.3 kW
+√3 × 394.41 V × 30.95 A = 21.141 kW      reported: 21.168 kW
 ```
 
-Two candidate readings of the reported `current` remain open, and a single log of
-concurrent set-current / reported-current / voltage / power values distinguishes
-them:
+This settles the old question of whether `current` was per-phase or a sum of
+phases: it is per-phase.
 
-1. `current` is per-phase — the relation above applies directly;
-2. `current` is the sum of all three phases — then `P = V_phase × I_sum`, which
-   is numerically identical, and reported current will be ≈3× the set current.
+**[confirmed] At partial load the relation breaks down, and not by a constant
+factor.** Steady-state means over 25 samples per step:
 
-**[untested]** The reported non-linearity of power against set current is not
-explained by either. The most plausible cause is the vehicle switching between
-single-phase and three-phase charging at some current threshold, which would put
-a genuine 3× step in the ratio. Power factor and standby draw account for a few
-percent at most.
+| I | U | P reported | √3·U·I | ratio |
+|---|---|---|---|---|
+| 7.17 A | 410.29 V | 2.051 kW | 5.094 kW | 0.40 |
+| 8.88 A | 408.75 V | 5.647 kW | 6.287 kW | 0.90 |
+| 30.95 A | 394.41 V | 21.168 kW | 21.141 kW | 1.00 |
+
+Current rises 24 % between the first two rows while power nearly triples. That
+step is the non-linearity reported in `known-issues.md`.
+
+**[untested] Which mechanism causes it is not resolved.** Two candidates fit the
+shape but neither fits the numbers cleanly:
+
+1. *Power factor* — real power is `√3 · U · I · cosφ`, and an onboard charger's
+   cosφ improves with load. But cosφ jumping 0.40 → 0.90 across a 24 % load
+   change is abrupt for a PFC-equipped charger.
+2. *Phase count* — the car switching between single- and three-phase would give
+   a genuine ~3× step. But a single-phase fit at 7.17 A predicts 1.70 kW against
+   2.05 kW measured, and a three-phase fit at 8.88 A predicts 6.29 kW against
+   5.65 kW measured.
+
+The protocol only exposes one aggregate current per connector, so per-phase
+currents would be needed to separate these — a clamp meter on the individual
+phases would settle it in minutes.
+
+**Practical consequence:** do not derive power from current. The reported
+`power` is real power and is trustworthy; `√3 · U · I` is apparent power and
+only coincides with it at full load. The supply also sags measurably under load
+(410 V idle → 394 V at 21 kW), so voltage is not a constant either.
 
 **[confirmed]** `meterInfo` is always `0.00` because no CT clamp is installed. The
 fields are functional, not broken.
 
 ## 7. Open questions
 
-All of these need a car plugged in, so they need the owner present.
-
 | Question | How to settle it | Blocks |
 |---|---|---|
-| Does re-sending `Authorize`/`Start` mid-session change the current? | Send it while charging, watch `current` | issue 3 |
-| Does `reserveCurrent` echo a normal `Start` request? | Start at 10 A, read `SynchroStatus` | issue 3 |
-| Is reported `current` per-phase or summed? | One log at 2–3 set currents | issue 4 |
-| Why is power non-linear in set current? | Same log, plus the car's phase behaviour | issue 4 |
+| Why is power non-linear in current — power factor or phase count? | Clamp meter on the individual phases | issue 4 |
 | Do `fault` and `reserve` really appear as `chargeStatus`? | Watch for the warning `_missing_` now logs | issue 1 |
+| Why does the first `Start` after a session ignore the current? | Unknown; the workaround (re-send) is proven | issue 3 |
+
+Settled by the 2026-08-13 measurements in §5a and §6: re-sending `Start`
+mid-session does change the current, `reserveCurrent` does not echo the
+request, and `current` is per-phase.
 
 Live reference values captured 2026-08-13, charger idle:
 `totalPower` 57399 (573.99 kWh), `chargeTimes` 174, `loadbalance` 11700,
