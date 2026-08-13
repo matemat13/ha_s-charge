@@ -96,6 +96,26 @@ searching by vocabulary works, dumping surrounding lines does not.
 `Authorize` (outgoing) and `DeviceData`, `SynchroStatus`, `SynchroData`,
 `NWireToDics` (incoming).
 
+**[confirmed]** There is one more incoming action the integration does not know
+about — **`Heartbeat`**, observed in a live capture of 210 messages:
+
+```json
+{"messageTypeId":"5","uniqueId":"194375","action":"Heartbeat",
+ "payload":{"chargeBoxSN":"2100322207300573"}}
+```
+
+It carries nothing but the serial and arrives roughly **every 12 s**.
+`parse_json` returns `None` for it, so it is acked and then discarded, which is
+harmless — but it is a free liveness signal. Heartbeats stopping is a much
+faster and more reliable death detector than waiting for TCP to give up, which
+is what the connection currently relies on (`ping_timeout=float("inf")` in
+`server_loop` disables the websockets keepalive timeout).
+
+Observed inbound mix over ~2 minutes idle: `DeviceData` 35, `SynchroStatus` 32,
+`SynchroData` 19, `Heartbeat` 9, `NWireToDics` 1. Note `DeviceData` arrives
+constantly — it is only the *value* of `totalPower` inside it that waits for a
+session to end.
+
 **[confirmed]** A sweep of the app's string pool for further action names found
 nothing protocol-shaped — only Flutter framework classes and `WiFiConfig`. There
 is **no hidden "set current" action**. Changing the current almost certainly means
@@ -129,9 +149,31 @@ connection until restart. See `known-issues.md` issue 1; this is one of its
 confirmed root causes.
 
 Treat the list as a lower bound, not a closed set. The parser should tolerate
-unknown values rather than enumerate them.
+unknown values rather than enumerate them — which is what `_missing_` on
+`ChargeStatusEnum` now does.
 
-### 4.3 Scheduled charging ("reserve")
+A live capture of 210 messages with nothing plugged in showed only `idle` and
+`finish`, so `fault` and `reserve` have still not been seen on the wire. They
+remain inferred.
+
+### 4.3 `electricWork` persists after a session ends
+
+**[confirmed]** When a session finishes, `electricWork` keeps reporting that
+session's energy — it is not cleared. Captured live with nothing plugged in:
+
+```json
+"connectorVice":{"voltage":"403.64","current":"0.00","power":"0.00",
+                 "electricWork":"5.00","chargingTime":"2:33:15"}
+```
+
+with `chargeStatus` already `finish` and `totalPower` already grown to include
+those 5 kWh. So `electricWork` may only ever be added to `totalPower` while
+`chargeStatus` is `charging`; outside a session it is a stale leftover and
+adding it would double-count. This is the mechanism behind the second entry in
+`known-issues.md`, and it is why `ChargerState.total_charged_energy()` anchors
+the session to the total observed when it *started*.
+
+### 4.4 Scheduled charging ("reserve")
 
 **[confirmed]** The app has a scheduled-charging feature. Its payload keys appear
 in the string pool:
@@ -204,13 +246,19 @@ fields are functional, not broken.
 
 ## 7. Open questions
 
+All of these need a car plugged in, so they need the owner present.
+
 | Question | How to settle it | Blocks |
 |---|---|---|
 | Does re-sending `Authorize`/`Start` mid-session change the current? | Send it while charging, watch `current` | issue 3 |
 | Does `reserveCurrent` echo a normal `Start` request? | Start at 10 A, read `SynchroStatus` | issue 3 |
 | Is reported `current` per-phase or summed? | One log at 2–3 set currents | issue 4 |
 | Why is power non-linear in set current? | Same log, plus the car's phase behaviour | issue 4 |
-| Any `chargeStatus` values beyond the six above? | Log unknown values instead of raising | issue 1 |
+| Do `fault` and `reserve` really appear as `chargeStatus`? | Watch for the warning `_missing_` now logs | issue 1 |
+
+Live reference values captured 2026-08-13, charger idle:
+`totalPower` 57399 (573.99 kWh), `chargeTimes` 174, `loadbalance` 11700,
+`rssi` -67, per-connector voltage 402.98 / 403.64 V.
 
 ## 8. Dead ends — do not repeat
 
