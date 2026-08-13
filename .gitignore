@@ -1,2 +1,5 @@
 **/__pycache__/**
 **scharge_venv/**
+artifacts/**
+
+*.swp
