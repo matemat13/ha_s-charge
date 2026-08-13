@@ -39,6 +39,22 @@ class SChargeConn:
         self.confirmation_timeout_s = 5.0
         self.handshake_period_s = 3.0
         self.request_data_period_s = 0.3
+        # The charger sends a Heartbeat about every 12s on top of its data
+        # messages, so this leaves plenty of room before we call it dead.
+        self.message_timeout_s = 30.0
+        self.last_message_time = 0.0
+
+        # Charging current management; see current_reconcile_loop().
+        self.desired_current = None
+        self.applied_current = {}   # connectorId -> setpoint the charger acked
+        self.charging_since = {}    # connectorId -> when that setpoint landed
+        self.stopping = set()       # connectorIds we have asked to stop
+        self.reconcile_period_s = 2.0
+        self.current_settle_s = 10.0
+        self.current_ceiling_margin_A = 1.0
+        self.charging_start_timeout_s = 30.0
+        self.charging_stop_timeout_s = 30.0
+        self.shutdown_timeout_s = 3.0
 
         self.loop_tasks = set()
 
@@ -78,62 +94,125 @@ class SChargeConn:
             self.future_confirmations.remove(confirmation)
             return False, "response timed out"
 
-    async def start_charging(self, current: int, connectorId: int, current_tolerance = 1.0) -> bool:
-        connector_idx = connectorId-1
-        max_retries = 10
+    def set_desired_current(self, current):
+        """Records the wanted charging current. current_reconcile_loop applies it."""
+        if current != self.desired_current:
+            self.logger.info(f"Desired charging current set to {current}A.")
+        self.desired_current = current
 
-        retries = 0
-        while self.charger_state.connectors[connector_idx].current.value is None:
-            self.logger.debug(f"Waiting for charger state intialization.")
-            retries += 1
-            if retries > max_retries:
-                return False
-            await asyncio.sleep(1.0)
+    async def apply_current(self, connectorId: int, current: int) -> bool:
+        """Pushes a charging current to a connector that is already charging."""
+        acked, why = await self.send_authorize_msg(current, "Start", connectorId)
+        if acked:
+            self.applied_current[connectorId] = current
+            self.charging_since[connectorId] = time.time()
+            self.logger.info(f"Applied {current}A to connector {connectorId}.")
+        else:
+            self.logger.warning(f"Could not apply {current}A to connector {connectorId}: {why}.")
+        return acked
 
-        while True:
-            self.logger.debug(f"Sending start charging command at {current}A.")
-            res = await self.send_authorize_msg(current, "Start", connectorId)
-            self.logger.debug(res)
-            if abs(self.charger_state.connectors[connector_idx].current.value - current) > current_tolerance:
-                retries += 1
-                self.logger.debug(f"The charge current does not match the desired ({self.charger_state.connectors[connector_idx].current} != {current}A). Tries: {retries}/{max_retries}.")
-                self.logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
-                if retries > max_retries:
-                    return False
-                await asyncio.sleep(3.0)
-            else:
-                break
+    async def reconcile_connector_current(self, connectorId: int):
+        connector = self.charger_state.connectors[connectorId-1]
 
-        return True
+        if not connector.is_charging():
+            self.applied_current.pop(connectorId, None)
+            self.charging_since.pop(connectorId, None)
+            self.stopping.discard(connectorId)
+            return
+
+        # We asked this connector to stop; re-sending Start would undo that.
+        if connectorId in self.stopping:
+            return
+
+        if self.desired_current is None:
+            return
+
+        # Either a session that just began -- the charger acks the first Start
+        # after a session ends but ignores the current in it, and sessions also
+        # start on their own -- or a setpoint the user has changed since.
+        if self.applied_current.get(connectorId) != self.desired_current:
+            await self.apply_current(connectorId, self.desired_current)
+            return
+
+        # Being acked does not mean it was honoured. The setpoint is a ceiling,
+        # so only an overshoot means anything: the car settles *below* the limit
+        # by a margin that grows with it (8A -> 7.17A, 10A -> 8.88A measured), so
+        # checking for equality would fire constantly.
+        since = self.charging_since.get(connectorId)
+        if since is None or time.time() - since < self.current_settle_s:
+            return
+
+        measured = connector.current.value
+        if measured is not None and measured > self.desired_current + self.current_ceiling_margin_A:
+            self.logger.warning(f"Connector {connectorId} draws {measured}A against a {self.desired_current}A limit, re-applying.")
+            await self.apply_current(connectorId, self.desired_current)
+
+    async def current_reconcile_loop(self):
+        """Keeps the charging current at what was actually asked for.
+
+        Runs as its own task rather than off a charger-state callback: applying
+        a current waits for an Ack that only arrives through the read loop, so
+        doing it inline would deadlock until that confirmation timed out.
+        """
+        try:
+            while True:
+                await asyncio.sleep(self.reconcile_period_s)
+                try:
+                    for connectorId in range(1, len(self.charger_state.connectors) + 1):
+                        await self.reconcile_connector_current(connectorId)
+                except Exception:
+                    self.logger.exception("Failed to reconcile the charging current")
+
+        except asyncio.CancelledError:
+            self.logger.info("Current reconciliation loop cancelled.")
+            raise
+
+    async def start_charging(self, current: int, connectorId: int) -> bool:
+        """Starts a session. Success means a session is running.
+
+        It does *not* mean the session runs at `current`: the charger ignores
+        the current in the first Start after a session ends. Getting the
+        setpoint to stick is current_reconcile_loop's job.
+        """
+        self.set_desired_current(current)
+        self.stopping.discard(connectorId)
+
+        acked, why = await self.send_authorize_msg(current, "Start", connectorId)
+        if not acked:
+            self.logger.warning(f"Start command for connector {connectorId} was not accepted: {why}.")
+            return False
+
+        deadline = time.time() + self.charging_start_timeout_s
+        while time.time() < deadline:
+            if self.charger_state.connectors[connectorId-1].is_charging():
+                return True
+            await asyncio.sleep(0.5)
+
+        self.logger.warning(f"Connector {connectorId} did not start charging within {self.charging_start_timeout_s}s.")
+        return False
 
     async def stop_charging(self, connectorId: int) -> bool:
-        connector_idx = connectorId-1
-        max_retries = 5
+        connector = self.charger_state.connectors[connectorId-1]
 
-        retries = 0
-        while self.charger_state.connectors[connector_idx].current.value is None:
-            self.logger.debug(f"Waiting for charger state intialization.")
-            retries += 1
-            if retries > max_retries:
-                return False
-            await asyncio.sleep(1.0)
+        # Set before sending, so the reconciler cannot restart what we stop.
+        self.stopping.add(connectorId)
 
-        retries = 0
-        while True:
-            self.logger.debug(f"Sending stop charging command.")
-            res = await self.send_authorize_msg(self.charger_state.connectors[connector_idx].miniCurrent.value, "Stop", connectorId)
-            self.logger.debug(res)
-            if self.charger_state.connectors[connector_idx].is_charging():
-                retries += 1
-                self.logger.debug(f"The charge status ({self.charger_state.connectors[connector_idx].chargeStatus}) does not match the desired. Tries: {retries}/{max_retries}.")
-                self.logger.debug(f"{self.charger_state.connectors[connector_idx]:<31}")
-                if retries > max_retries:
-                    return False
-                await asyncio.sleep(3.0)
-            else:
-                break
+        acked, why = await self.send_authorize_msg(connector.miniCurrent.value, "Stop", connectorId)
+        if not acked:
+            self.logger.warning(f"Stop command for connector {connectorId} was not accepted: {why}.")
+            self.stopping.discard(connectorId)
+            return False
 
-        return True
+        deadline = time.time() + self.charging_stop_timeout_s
+        while time.time() < deadline:
+            if not connector.is_charging():
+                return True
+            await asyncio.sleep(0.5)
+
+        # Deliberately stays in self.stopping: charging is still running, and
+        # restarting it because a Stop failed is the wrong way to be wrong.
+        self.logger.warning(f"Connector {connectorId} did not stop charging within {self.charging_stop_timeout_s}s.")
+        return False
 
     async def send_message(self, websocket, message):
         self.logger.debug(f">> {message}")
@@ -147,8 +226,54 @@ class SChargeConn:
         message = msg.encode()
         await self.send_message(websocket, message)
 
+    async def process_message(self, websocket, message):
+        """Handles a single message from the charger."""
+        self.logger.debug(f"<< {message}")
+        msg_json = json.loads(message)
+
+        msg_serial = msg_json["payload"]["chargeBoxSN"]
+        if msg_serial != self.charge_box_serial:
+            self.logger.info(f"Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
+            return
+
+        # If it's an Ack message check if we're not expecting confirmation for a message
+        if msg_json["messageTypeId"] == Ack.messageTypeId:
+            for future_confirmation in self.future_confirmations:
+                if future_confirmation.uniqueId == int(msg_json["uniqueId"]):
+                    future_confirmation.set_result(msg_json["payload"]["result"])
+
+        # Otherwise it's a payload message, send an ack for it and then process it
+        else:
+            asyncio.create_task(self.send_ack(websocket, msg_json["uniqueId"]))
+
+            msg_parsed = parse_json(msg_json)
+            if msg_parsed is not None:
+                await self.charger_state.update(msg_parsed)
+
+    async def watchdog_loop(self, websocket):
+        """Closes the connection if the charger goes quiet.
+
+        A charger that loses power or drops off the WiFi can leave the socket
+        open from our side indefinitely. Nothing else notices: server_loop
+        disables the websockets keepalive timeout with ping_timeout=inf, so
+        this would only surface when TCP finally gives up, minutes later, with
+        the UDP handshake never rebroadcast in the meantime.
+        """
+        try:
+            while True:
+                await asyncio.sleep(self.message_timeout_s / 2)
+                silence_s = time.time() - self.last_message_time
+                if silence_s > self.message_timeout_s:
+                    self.logger.warning(f"Nothing from the charger for {silence_s:.0f}s, assuming the connection is dead.")
+                    await websocket.close()
+                    return
+
+        except asyncio.CancelledError:
+            raise
+
     async def process_websocket(self, websocket):
         """Handles messages from the connected charger."""
+        watchdog_task = None
         try:
             if self.websocket is None:
                 self.websocket = websocket
@@ -156,59 +281,80 @@ class SChargeConn:
                 remote_ip, remote_port = websocket.remote_address
                 self.logger.info(f"Connection established with {remote_ip}:{remote_port}!")
 
+            self.last_message_time = time.time()
+            watchdog_task = asyncio.create_task(self.watchdog_loop(websocket))
+
             async for message in websocket:
-                self.logger.debug(f"<< {message}")
-                msg_json = json.loads(message)
+                self.last_message_time = time.time()
+                try:
+                    await self.process_message(websocket, message)
+                except Exception:
+                    # One unexpected message must never cost us the connection.
+                    # The charger is the only source of data and it only
+                    # reconnects after a fresh UDP handshake, so a dropped
+                    # connection strands the integration until it is restarted.
+                    self.logger.exception(f"Failed to process message {message}")
 
-                msg_serial = msg_json["payload"]["chargeBoxSN"]
-                if msg_serial != self.charge_box_serial:
-                    self.logger.info("Ignoring message for a different charge box with SN{msg_serial} (expected SN{self.charge_box_serial}).")
-                    continue
+        except (websockets.exceptions.ConnectionClosed, ConnectionResetError) as e:
+            self.logger.info(f"Websocket connection lost: {e}")
 
-                # If it's an Ack message check if we're not expecting confirmation for a message
-                if msg_json["messageTypeId"] == Ack.messageTypeId:
-                    for future_confirmation in self.future_confirmations:
-                        if future_confirmation.uniqueId == int(msg_json["uniqueId"]):
-                            future_confirmation.set_result(msg_json["payload"]["result"])
+        finally:
+            if watchdog_task is not None:
+                watchdog_task.cancel()
 
-                # Otherwise it's a payload message, sned an ack for it and then process it
-                else:
-                    # print("Got message, sending ack")
-                    asyncio.create_task(self.send_ack(websocket, msg_json["uniqueId"]))
+            # Also reached on a clean close: the websockets async iterator
+            # swallows ConnectionClosedOK and simply stops, so without this the
+            # server would wait on disconnected_evt forever and never
+            # rebroadcast the UDP handshake the charger needs to come back.
+            if self.websocket is websocket:
+                self.logger.info("Charger disconnected.")
+                self.disconnected_evt.set()
 
-                    msg_parsed = parse_json(msg_json)
-                    if msg_parsed is not None:
-                        await self.charger_state.update(msg_parsed)
-                        # print(f"{self.charger_state}")
-        except (websockets.exceptions.ConnectionClosedError, ConnectionResetError) as e:
-            self.logger.info(f"Websocket server disconnected: {e}")
-            self.disconnected_evt.set()
+    async def close_server(self, server):
+        """Closes the WebSocket server without letting shutdown block forever.
+
+        wait_closed() returns only once every connection handler has returned.
+        During interpreter teardown those handlers have themselves been
+        cancelled and it never returns, so an unbounded wait here is the
+        difference between the process exiting and being SIGKILLed.
+        """
+        server.close()
+        try:
+            await asyncio.wait_for(server.wait_closed(),
+                                   timeout=self.shutdown_timeout_s)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self.logger.warning(f"WebSocket server did not close within {self.shutdown_timeout_s}s, abandoning it.")
+            # Cancel the close it is stuck in, otherwise asyncio reports it as
+            # "Task was destroyed but it is pending" on the way out.
+            close_task = getattr(server, "close_task", None)
+            if close_task is not None:
+                close_task.cancel()
 
     async def server_loop(self):
+        """Starts the WebSocket server."""
         self.disconnected_evt = asyncio.Event()
         self.logger.info(f"Starting WebSocket server on {self.rcv_ip}:{self.rcv_port}")
-        """Starts the WebSocket server."""
-        async with websockets.serve(self.process_websocket, host=self.rcv_ip, port=self.rcv_port, ping_timeout=float("inf")) as server:
-            try:
-                socket = server.sockets[0]
-                self.rcv_port = (socket.getsockname()[1])
-                self.rcv_port_evt.set()
-                self.logger.info(f"Started WebSocket server on {self.rcv_ip}:{self.rcv_port}")
 
-                self.logger.info("Waiting if server disconnects")
-                await self.disconnected_evt.wait()
-                server.close()
-                await server.wait_closed()
+        # Deliberately not `async with`: its __aexit__ waits on wait_closed()
+        # unbounded, which is the thing that hangs shutdown.
+        server = await websockets.serve(self.process_websocket, host=self.rcv_ip, port=self.rcv_port, ping_timeout=float("inf"))
+        try:
+            socket = server.sockets[0]
+            self.rcv_port = (socket.getsockname()[1])
+            self.rcv_port_evt.set()
+            self.logger.info(f"Started WebSocket server on {self.rcv_ip}:{self.rcv_port}")
 
-            except asyncio.CancelledError:
-                self.logger.info("Server loop cancelled. Closing WebSocket server.")
-                self.shutdown = True
-                server.close()
-                await server.wait_closed()
-                raise
+            self.logger.info("Waiting if server disconnects")
+            await self.disconnected_evt.wait()
 
-            finally:
-                self.websocket = None
+        except asyncio.CancelledError:
+            self.logger.info("Server loop cancelled. Closing WebSocket server.")
+            self.shutdown = True
+            raise
+
+        finally:
+            self.websocket = None
+            await self.close_server(server)
 
     async def udp_handshake_loop(self, ip_address, port):
         """Broadcasts UDP handshake messages until connected."""
@@ -301,6 +447,9 @@ class SChargeConn:
 
             self.handshake_loop_task = asyncio.create_task(self.handshake_loop(self.websocket))
             self.loop_tasks.add(self.handshake_loop_task)
+
+            self.reconcile_loop_task = asyncio.create_task(self.current_reconcile_loop())
+            self.loop_tasks.add(self.reconcile_loop_task)
 
         # self.loop_tasks.add(asyncio.create_task(self.keyboard_loop()))
 

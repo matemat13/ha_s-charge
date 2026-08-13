@@ -35,8 +35,6 @@ class MQTTClient:
         self.logger = logger
         self.topic_mgrs = list()
 
-        self.desired_current = 0
-
     async def main(self):
         self.logger.info(f"Starting MQTT client with hostname {self.hostname}:{self.port}, user: {self.username}, password: {self.password}.")
         async with aiomqtt.Client(hostname=self.hostname, port=self.port, username=self.username, password=self.password) as client:
@@ -45,6 +43,13 @@ class MQTTClient:
             while not self.scharge_conn.charger_state.initialized():
                 await asyncio.sleep(1)
             discovery_topic = f"homeassistant/device/scharge{self.scharge_conn.charge_box_serial}/config"
+
+            if self.scharge_conn.desired_current is None:
+                # Start at the charger's minimum rather than 0, which is below
+                # miniCurrent and would be rejected if the switch were flipped
+                # before the number entity had ever been set.
+                self.scharge_conn.set_desired_current(
+                        self.scharge_conn.charger_state.connectorMain.miniCurrent.value)
 
             charging_mqtt_mgr = MQTTSwitchMgr(
                         name="charging",
@@ -65,7 +70,7 @@ class MQTTClient:
                         step=1,
                         process_msg=self.process_set_current,
                         publish=self.publish,
-                        get_state=lambda: self.desired_current,
+                        get_state=lambda: self.scharge_conn.desired_current,
                         get_available=self.scharge_conn.charger_state.initialized
                         )
             self.scharge_conn.charger_state.register_update_cbk(set_current_mqtt_mgr.publish_state)
@@ -112,12 +117,7 @@ class MQTTClient:
             await asyncio.sleep(3)
     
     def get_total_charged_energy(self):
-        total_energy = self.scharge_conn.charger_state.totalPower.value
-        for connector in self.scharge_conn.charger_state.connectors:
-            cur_charge_energy = connector.electricWork.value
-            if connector.is_charging():
-                total_energy += cur_charge_energy
-        return total_energy
+        return self.scharge_conn.charger_state.total_charged_energy()
 
     async def process_switch_charging(self, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
         connectorId = 1
@@ -125,8 +125,8 @@ class MQTTClient:
             connectorId = 2
 
         if msg.payload == b"ON":
-            self.logger.info(f"Starting charging from MQTT on connector {connectorId} with current {self.desired_current}A!")
-            success = await self.scharge_conn.start_charging(self.desired_current, connectorId)
+            self.logger.info(f"Starting charging from MQTT on connector {connectorId} with current {self.scharge_conn.desired_current}A!")
+            success = await self.scharge_conn.start_charging(self.scharge_conn.desired_current, connectorId)
             if success:
                 self.logger.info(f"Started charging!")
             else:
@@ -141,8 +141,9 @@ class MQTTClient:
         await self.publish(mgr.state_topic, mgr.get_state_msg())
 
     async def process_set_current(self, mgr : MQTTSwitchMgr, msg: aiomqtt.Message):
-        self.desired_current = int(msg.payload)
-        self.logger.info(f"Changed desired charging current to {self.desired_current}A.")
+        # Recorded on the connection, whose reconcile loop pushes it to the
+        # charger -- including for sessions that start on their own.
+        self.scharge_conn.set_desired_current(int(msg.payload))
         await self.publish(mgr.state_topic, mgr.get_state_msg())
 
     async def publish(self, topic: str, message: str):
